@@ -1,6 +1,6 @@
 # RankMixer 与 MT-RankMixer 技术说明
 
-本文说明在本 FuxiCTR fork 中实现的 RankMixer（Zhu 等，CIKM 2025，arXiv:2507.15551，字节跳动）以及原创多任务变体 MT-RankMixer。公式编号与论文第 3 节一致。CPU 自测命令和原始输出见第 5 节。
+本文说明在本 FuxiCTR fork 中实现的 RankMixer（Zhu 等，CIKM 2025，arXiv:2507.15551，字节跳动）以及原创多任务变体 MT-RankMixer。公式编号与论文第 3 节一致。CPU 自测见第 5 节，RTX 4090 上的公开数据结果见第 7 节。
 
 ## 1. 动机
 
@@ -9,7 +9,7 @@
 - **多头 Token Mixing**：不用注意力权重，只做 reshape / 拼接，在 token 之间交换信息。论文报告它比自注意力更准，也更省算力和显存。
 - **Per-token FFN**：每个 token 有自己的 FFN 参数。计算量和共享 FFN 相同，参数量大约乘以 token 数，用来避免高频特征空间把长尾特征淹没。
 
-论文在抖音推荐上把稠密参数扩到约 1B，在线活跃天数 +0.3%，使用时长 +1.08%，并把 MFU 从 4.5% 提到 45%。公开的 Criteo / Ali-CCP 实验不能复现这个规模，本仓库提供的是可在 FuxiCTR 里训练、可在小数据上核对形状和训练闭环、并预留了 GPU 对照配置的实现。
+论文在抖音推荐上把稠密参数扩到约 1B，在线活跃天数 +0.3%，使用时长 +1.08%，并把 MFU 从 4.5% 提到 45%。公开的 Criteo / Ali-CCP 实验不能复现这个规模。本仓库的实现可以在 FuxiCTR 里训练；第 5 节是 tiny 数据上的 CPU 闭环，第 7 节是同一套小宽度配置在 RTX 4090 上的 1 epoch 对照。
 
 ## 2. 架构
 
@@ -62,7 +62,7 @@ h_k = \sum_t \alpha_{k,t} x_t, \qquad
 
 这和 MMoE 不是一回事。MMoE 的专家读的是同一份展平嵌入；RankMixer 的 per-token FFN 每个只看自己的 token，参数和输入一起拆开。任务门控发生在 mixing 之后，门控的对象是 token，不是一份共享输入上的专家。
 
-**分组方式可配置**，这是计划中的消融，论文本身只描述了按语义聚类后再顺序切分：
+**分组方式可配置**。论文本身只描述了按语义聚类后再顺序切分。第 7.3 节在 Ali-CCP 上比较了这两种切法：
 
 - `token_grouping: sequential`（默认）：按特征表顺序切块，对应式 2。
 - `token_grouping: semantic`：`feature_groups` 里每一项是一组特征名，或一个 `source`（如 `user` / `item` / `context`）。每个组单独投影成一个 token。未覆盖或重复的特征会在建模型时直接报错。YAML 里写成整数的特征号（如 `101`）会转成字符串再匹配列名。
@@ -207,52 +207,61 @@ tiny 集只有约 100 条样本，AUC 接近 1 或很低都只说明训练闭环
 6. **公开数据上的宽度远小于论文。** Criteo 配置的稠密 FFN 参数大约 \(2kLTD^2 = 2\times2\times2\times8\times64^2 = 262144\)。论文 100M 配置是 \(D=768, T=16, L=2\)。不要把这边的 AUC 和论文表 1 比。
 7. **多任务门控和语义分组都不是论文内容。** 分组是消融开关，默认仍然是论文的顺序切分。
 
-## 7. 计划中的 GPU 对照
+## 7. GPU 实验结果
 
-脚本：`benchmarks/rankmixer/run_gpu_benchmark.sh`。说明和下载步骤：`benchmarks/rankmixer/README.md`。本环境没有 GPU，也没有 Criteo / Ali-CCP 全量文件，这一节的实验还没有跑。
+本节数字来自 2026-10-05 在 AutoDL 上的一次完整流水线，9 个任务全部成功（exit 0）。代码是分支 `cursor/rankmixer-mt-ce74` 的 commit `5bbf507`，服务器上没有本地代码改动。Epoch 时间只计一个 epoch 的训练（日志里从 Epoch start 到 Evaluation），不含数据加载和评估。
 
-对照关系：
+### 7.1 设置
 
-- 单任务，Criteo_x1：`RankMixer_criteo_x1` vs DCNv2 / WuKong / DNN
-- 多任务，Ali-CCP（click、conversion）：`MTRankMixer_aliccp` vs MMoE / PLE / ShareBottom
+- GPU：1 × NVIDIA GeForce RTX 4090（AutoDL）。
+- 时间：2026-10-05 12:15:54–12:57:40 CST，流水线总计 2505 秒（约 41.8 分钟）。
+- 公共设置：`epochs=1`，`batch_size=8192`，`embedding_dim=16`，Adam，学习率 `1e-3`，`seed=2025`，无正则、无 dropout，监控 AUC（越大越好）。每个模型单次运行、单种子、未调参。
+- Criteo_x1：FuxiCTR / BARS 标准切分，全量。4029 batch/epoch，约 3300 万训练样本。
+- AliCCP_x1：PaddleRec 公开镜像预处理后的常用采样版，https://paddlerec.bj.bcebos.com/datasets/aitm/ 。这不是需要学生认证的天池原版。4648 batch/epoch，约 3800 万训练样本，`min_categr_count=10`。
+- RankMixer（`RankMixer_criteo_x1`）：`num_tokens=8`，`token_dim=64`，`num_layers=2`，`ffn_multiplier=2`，`num_experts=4` 但 `use_sparse_moe=false`（稠密 FFN），`moe_lambda=1e-3`，`token_grouping=sequential`，LayerNorm + 残差，输出 MLP `[64]`。
+- MT-RankMixer：`num_tasks=2`，`num_layers=2`，`ffn_multiplier=2`，`num_experts=4`（稠密），`gate_type=softmax`，`moe_lambda=1e-3`，`loss_weight=EQ`，任务 tower `[64]`。sequential 为 `num_tokens=8`、`token_dim=64`。semantic 为 `num_tokens=3`、`token_dim=48`，分组是用户 `[101,121,122,124,125,126,127,128,129]`、商品 `[205,206,207,216]`、组合/上下文 `[508,509,702,853,301]`。
 
-共同设置：Adam，学习率 `1e-3`，embedding 16，batch 8192，1 个 epoch，seed 2025，不加额外 L2。RankMixer 为 `T=8, D=64, L=2, k=2`。
+### 7.2 Criteo_x1（单任务 CTR）
 
-### 数据
+| 模型 | 参数量 | Valid AUC | Valid logloss | Test AUC | Test logloss | Epoch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| DCNv2 | 34,745,121 | 0.808634 | 0.442998 | 0.808973 | 0.442537 | 97 s |
+| RankMixer（新） | 33,656,481 | 0.808138 | 0.443553 | 0.808522 | 0.443048 | 114 s |
+| DNN | 33,574,497 | 0.806911 | 0.444872 | 0.807165 | 0.444495 | 88 s |
+| WuKong | 33,582,393 | 0.806493 | 0.444985 | 0.806889 | 0.444488 | 102 s |
 
-Criteo_x1（约 2.9 GB）：
+RankMixer 的 test AUC 比 DNN 高 0.0014（0.808522 − 0.807165），比 WuKong 高 0.0016（0.808522 − 0.806889），比 DCNv2 低 0.0005（0.808522 − 0.808973）。在这组未调参的 1 epoch 设置里，RankMixer 优于 DNN 和 WuKong，与 DCNv2 基本持平。四个模型的参数量都在 3360 万到 3470 万之间，embedding 表占了绝大部分，稠密交叉部分的差别被参数总量拉平了。
 
-```bash
-mkdir -p data/Criteo
-wget -O /tmp/Criteo_x1.zip \
-  https://huggingface.co/datasets/reczoo/Criteo_x1/resolve/main/Criteo_x1.zip
-unzip /tmp/Criteo_x1.zip -d data/Criteo
-# data/Criteo/Criteo_x1/{train,valid,test}.csv
-# 标签列 label；数值 I1–I13；类别 C1–C26
-```
+### 7.3 AliCCP_x1（多任务 CTR / CVR）
 
-Ali-CCP 需要天池登录（数据集 408）：https://tianchi.aliyun.com/dataset/408 。下载 `sample_skeleton_{train,test}.csv` 和 `common_features_{train,test}.csv`，按 `benchmarks/rankmixer/README.md` 抽 18 个类别特征，第二标签列命名为 `conversion`，并从训练集按顺序留出 10% 做验证。放到：
+Test：
 
-```text
-data/AliCCP/AliCCP_x1/train.csv
-data/AliCCP/AliCCP_x1/valid.csv
-data/AliCCP/AliCCP_x1/test.csv
-```
+| 模型 | 参数量 | click AUC | click logloss | conv AUC | conv logloss | 平均 AUC | Epoch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MT-RankMixer（semantic，新） | 20,478,948 | 0.619737 | 0.161928 | 0.640612 | 0.002067 | 0.630174 | 91 s |
+| PLE | 20,738,012 | 0.621780 | 0.161666 | 0.624989 | 0.002128 | 0.623385 | 82 s |
+| MT-RankMixer（sequential，新） | 20,678,612 | 0.617890 | 0.162420 | 0.627733 | 0.002098 | 0.622811 | 98 s |
+| ShareBottom | 20,455,634 | 0.621760 | 0.161650 | 0.619310 | 0.002200 | 0.620535 | 69 s |
+| MMoE | 20,628,890 | 0.619928 | 0.161709 | 0.618001 | 0.002148 | 0.618964 | 78 s |
 
-### 命令
+Valid：
 
-```bash
-bash benchmarks/rankmixer/run_gpu_benchmark.sh 0          # 8 个任务
-bash benchmarks/rankmixer/run_gpu_benchmark.sh 0 single   # 只跑 Criteo
-bash benchmarks/rankmixer/run_gpu_benchmark.sh 0 multi    # 只跑 Ali-CCP
+| 模型 | click AUC | click logloss | conv AUC | conv logloss | 平均 AUC |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MT-RankMixer（semantic） | 0.619608 | 0.161800 | 0.643919 | 0.002112 | 0.631764 |
+| PLE | 0.621765 | 0.161530 | 0.630583 | 0.002172 | 0.626174 |
+| MT-RankMixer（sequential） | 0.617952 | 0.162286 | 0.633717 | 0.002141 | 0.625835 |
+| ShareBottom | 0.621575 | 0.161528 | 0.627480 | 0.002239 | 0.624527 |
+| MMoE | 0.620067 | 0.161570 | 0.627999 | 0.002188 | 0.624033 |
 
-# 语义分组消融（不在默认脚本里）
-cd model_zoo/multitask/MT_RankMixer
-python run_expid.py --expid MTRankMixer_aliccp_semantic --gpu 0
-```
+semantic 分组的 MT-RankMixer 平均 AUC 最高（test 0.630174）。转化 AUC 也最高：test conv AUC 0.640612，比 PLE 的 0.624989 高约 0.016，conv logloss 同样最低（0.002067）。点击 AUC 是 0.619737，比 PLE（0.621780）和 ShareBottom（0.621760）低约 0.002。
 
-### 预计耗时
+sequential 分组的平均 AUC 是 0.622811，低于 semantic 的 0.630174，点击 AUC 在五者里最低。它的转化 AUC 0.627733 仍高于 PLE、ShareBottom 和 MMoE，但和 semantic 的差距说明按语义把特征放进不同 token，而不是按表顺序切块，是这次多任务扩展里起作用的部分。
 
-预处理缓存写好之后，单卡、batch 8192、1 个 epoch：T4/L4 上 8 个任务大约 8–12 GPU 小时；A10 大约 5–8 小时；A100 40GB 大约 3–5 小时。时间主要花在读数据和 embedding，不在这个小宽度的 FFN 上。第一次从 csv 建词表和 parquet 缓存，每个数据集还要额外 30–90 分钟。
+### 7.4 局限
 
-若预算只有大约 3 GPU 小时：只跑 RankMixer vs DCNv2，以及 MT-RankMixer vs PLE；或把训练集截成前 400 万行（验证集和测试集保持全量），并在结果里注明这不是完整 epoch。
+每个模型只训练 1 个 epoch，只有一个种子，没有调参。Ali-CCP 的转化正样本极少，CVR 的 AUC 和 logloss 波动大。0.001 量级的差距，包括 Criteo 上相对 DCNv2 的 0.0005，以及 Ali-CCP 点击上相对 PLE 的约 0.002，都可能落在噪声里。后续需要多种子、多个 epoch，并打开 early stopping 再复核。这组结果也不能和论文表 1 的抖音 100M / 1B 模型比较。
+
+### 7.5 复现
+
+脚本仍是 `benchmarks/rankmixer/run_gpu_benchmark.sh`，英文步骤在 `benchmarks/rankmixer/README.md`。Criteo_x1 用 BARS 切分。Ali-CCP 这次用的是 PaddleRec 镜像 https://paddlerec.bj.bcebos.com/datasets/aitm/ ，预处理成上述 18 个类别字段和 `click` / `conversion` 两列，而不是天池原版。semantic 消融的 expid 是 `MTRankMixer_aliccp_semantic`。在这张 4090 上，单个 epoch 的训练是 69–114 秒；整条 9 任务流水线含加载和评估共 41.8 分钟。

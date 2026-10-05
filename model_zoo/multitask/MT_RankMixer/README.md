@@ -54,7 +54,7 @@ python run_expid.py --expid MTRankMixer_aliccp --gpu 0
 python run_expid.py --expid MTRankMixer_aliccp_semantic --gpu 0
 ```
 
-`MTRankMixer_aliccp` is the 1-epoch comparison point against MMoE, PLE, and ShareBottom. `MTRankMixer_aliccp_semantic` is the grouping ablation (user profile / item / shop-context, `T=3`, `D=48`).
+`MTRankMixer_aliccp` is the 1-epoch comparison point against MMoE, PLE, and ShareBottom. `MTRankMixer_aliccp_semantic` is the grouping ablation (user profile / item / shop-context, `T=3`, `D=48`). On the recorded RTX 4090 Ali-CCP run (PaddleRec mirror, 2026-10-05), semantic grouping had test conversion AUC 0.640612 and mean AUC 0.630174, both best among PLE, MMoE, ShareBottom, and the sequential variant. See section 7 of [`../../../docs/RankMixer_tech_report.md`](../../../docs/RankMixer_tech_report.md).
 
 ## How this differs from MMoE
 

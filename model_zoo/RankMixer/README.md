@@ -49,7 +49,7 @@ Criteo_x1 (download steps are in [`../../benchmarks/rankmixer/README.md`](../../
 python run_expid.py --expid RankMixer_criteo_x1 --gpu 0
 ```
 
-`RankMixer_criteo_x1` is a modest 1-epoch setting (`T=8`, `D=64`, `L=2`, `k=2`, embedding size 16, batch 8192), not the paper's 100M-parameter production model (`D=768`, `T=16`, `L=2`).
+`RankMixer_criteo_x1` is a modest 1-epoch setting (`T=8`, `D=64`, `L=2`, `k=2`, embedding size 16, batch 8192), not the paper's 100M-parameter production model (`D=768`, `T=16`, `L=2`). On the recorded RTX 4090 run (2026-10-05, seed 2025), test AUC was 0.808522, about +0.0014 over DNN and −0.0005 versus DCNv2. See section 7 of the tech report.
 
 ## Simplifications
 
