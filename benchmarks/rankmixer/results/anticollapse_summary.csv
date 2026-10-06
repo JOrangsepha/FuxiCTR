@@ -1,0 +1,9 @@
+model,seed,expid,status,exit_code,seconds,best_epoch,test_click_auc,test_click_logloss,test_conv_auc,test_conv_logloss,test_mean_auc,test_mean_logloss,log_path
+MTRankMixer_semantic_entropy,2025,MTRankMixer_aliccp_semantic_entropy_s2025,ok,0,595,1,0.617713,0.161968,0.619608,0.002142,0.6186605000000001,0.082055,/root/autodl-tmp/ac_out/logs/MTRankMixer_aliccp_semantic_entropy_s2025.log
+MTRankMixer_semantic_entropy,2026,MTRankMixer_aliccp_semantic_entropy_s2026,ok,0,601,1,0.620596,0.161372,0.63697,0.001981,0.6287830000000001,0.0816765,/root/autodl-tmp/ac_out/logs/MTRankMixer_aliccp_semantic_entropy_s2026.log
+MTRankMixer_semantic_entropy,2027,MTRankMixer_aliccp_semantic_entropy_s2027,ok,0,599,1,0.618898,0.161878,0.628728,0.002005,0.623813,0.0819415,/root/autodl-tmp/ac_out/logs/MTRankMixer_aliccp_semantic_entropy_s2027.log
+MTRankMixer_semantic_residual,2025,MTRankMixer_aliccp_semantic_residual_s2025,ok,0,595,1,0.620415,0.161454,0.629259,0.001992,0.6248370000000001,0.08172299999999999,/root/autodl-tmp/ac_out/logs/MTRankMixer_aliccp_semantic_residual_s2025.log
+MTRankMixer_semantic_residual,2026,MTRankMixer_aliccp_semantic_residual_s2026,ok,0,604,1,0.617089,0.161906,0.628573,0.002129,0.622831,0.0820175,/root/autodl-tmp/ac_out/logs/MTRankMixer_aliccp_semantic_residual_s2026.log
+MTRankMixer_semantic_residual,2027,MTRankMixer_aliccp_semantic_residual_s2027,ok,0,602,1,0.616937,0.162661,0.634573,0.002045,0.6257550000000001,0.082353,/root/autodl-tmp/ac_out/logs/MTRankMixer_aliccp_semantic_residual_s2027.log
+gate_entropy_s2025,2025,gate_entropy_s2025,failed,-1,-1,,,,,,,,/root/autodl-tmp/ac_out/logs/gate_entropy_s2025.log
+gate_residual_s2025,2025,gate_residual_s2025,failed,-1,-1,,,,,,,,/root/autodl-tmp/ac_out/logs/gate_residual_s2025.log

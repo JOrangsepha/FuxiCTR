@@ -1,18 +1,30 @@
 # 本 Fork 的贡献：RankMixer + MT-RankMixer
 
-这是我在 FuxiCTR 上做的多任务排序工作。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现；我自己的部分是 **MT-RankMixer**：CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
+这是我在 FuxiCTR 上做的多任务排序。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：CTR / CVR 各自对语义 token 做门控；多种子复核发现转化门控会塌缩；残差池化把共享 mean 加回去，保住可解释的任务门控。
 
-*This fork reproduces RankMixer and adds MT-RankMixer. The original piece is per-task token gating over semantic tokens, not a line-by-line port of the paper.*
+*This fork reproduces RankMixer and adds MT-RankMixer: per-task gates on semantic tokens, a measured gate collapse, and residual gated pooling. Residual matches shared mean pooling and does not clearly beat it.*
 
 **创新点**
 
-1. **任务感知的 token 门控**，替代论文里所有任务共享的 mean-pooling。
-2. **语义 token 化**（用户 / 商品 / 上下文），让门控有可解释的对象；顺序切块是对照。
-3. **共享池化消融**（`task_pooling: mean`）和 **门控权重分析**。消融配置和多种子脚本已经写好，这一轮 GPU 数字还没出。
+1. **Per-task token gating + 语义 token。** CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
+2. **门控塌缩的发现和可解释性分析。** 3 种子复核后，转化门控塌到商品 token（0.971），用户信息被丢掉。点击和转化学到了不同偏好。
+3. **残差门控池化。** \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。λ 约 0.5，转化的有效权重回到用户约 0.64 / 商品约 0.18 / 上下文约 0.17。
 
-**1 epoch、单种子、RTX 4090 上已经跑完的结果**（未调参；0.001 量级先不要当结论）
+**Ali-CCP test 平均 AUC**（3 种子，均值 ± 样本标准差，early stopping；PaddleRec 公开镜像）
 
-Criteo_x1 test：
+| 模型 | click AUC | conv AUC | 平均 AUC |
+| --- | --- | --- | ---: |
+| 共享 mean | 0.61824 ± 0.00257 | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
+| 残差门控 | 0.61815 ± 0.00197 | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
+| 熵正则 0.01 | 0.61907 ± 0.00145 | 0.62844 ± 0.00868 | 0.62375 ± 0.00506 |
+| PLE | 0.61994 ± 0.00039 | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
+| 原 per-task gating | 0.61835 ± 0.00160 | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
+
+残差版是门控类里最好、方差最小的，比 PLE 和原门控高约 0.0015，与共享 mean 打平（−0.0005，在一个标准差内）。**没有明显胜过共享 mean。**
+
+![种子 2025 的原 per-task gating：转化门控塌到商品 token（0.971）。](docs/img/rankmixer/multiseed_gate_weights.png)
+
+**Criteo_x1 test**（1 epoch、单种子 2025，没有做多种子）
 
 | 模型 | Test AUC | Test logloss |
 | --- | ---: | ---: |
@@ -21,15 +33,7 @@ Criteo_x1 test：
 | DNN | 0.807165 | 0.444495 |
 | WuKong | 0.806889 | 0.444488 |
 
-Ali-CCP test（PaddleRec 公开镜像，不是天池原版）：
-
-| 模型 | click AUC | conv AUC | 平均 AUC |
-| --- | ---: | ---: | ---: |
-| MT-RankMixer semantic | 0.619737 | 0.640612 | 0.630174 |
-| PLE | 0.621780 | 0.624989 | 0.623385 |
-| MT-RankMixer sequential | 0.617890 | 0.627733 | 0.622811 |
-
-语义分组的转化 AUC 比 PLE 高约 0.016，平均 AUC 也最高；点击略低约 0.002。顺序切块明显弱于语义分组。设计取舍、局限和下一轮多种子实验见 [docs/RankMixer_tech_report.md](docs/RankMixer_tech_report.md)。
+完整迭代、初步单种子表和局限见 [docs/RankMixer_tech_report.md](docs/RankMixer_tech_report.md)。
 
 ```mermaid
 flowchart LR
@@ -37,10 +41,15 @@ flowchart LR
   I[商品 token] --> Mix
   C[上下文 token] --> Mix
   Mix --> FFN[Per-token FFN 加残差]
+  FFN --> Mean[共享 mean]
   FFN --> G1[CTR 门控]
   FFN --> G2[CVR 门控]
-  G1 --> T1[CTR tower]
-  G2 --> T2[CVR tower]
+  Mean --> L1["λ_click 混合"]
+  G1 --> L1
+  Mean --> L2["λ_conv 混合"]
+  G2 --> L2
+  L1 --> T1[CTR tower]
+  L2 --> T2[CVR tower]
 ```
 
 ```bash
@@ -48,6 +57,7 @@ cd model_zoo/RankMixer && python run_expid.py --expid RankMixer_test --gpu -1
 cd model_zoo/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_test --gpu -1
 bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
 bash benchmarks/rankmixer/run_multiseed.sh 0
+bash benchmarks/rankmixer/run_anticollapse.sh 0
 ```
 
 ---

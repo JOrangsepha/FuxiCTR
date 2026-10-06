@@ -88,7 +88,7 @@ First-time csv preprocessing (vocabulary + parquet cache) can add another 30-90 
 
 ## 5. Recorded run (RTX 4090, 2026-10-05)
 
-One full pipeline on 1 × NVIDIA GeForce RTX 4090 (AutoDL), commit `5bbf507`, no local code changes. Shared settings: 1 epoch, batch 8192, embedding size 16, Adam `lr=1e-3`, seed 2025, no L2, no dropout, AUC monitor, single seed, no tuning. Wall clock 12:15:54–12:57:40 CST (2505 s, about 41.8 min) for 9 tasks, all exit 0. Epoch time below is training only. Full tables, valid metrics, and caveats are in `docs/RankMixer_tech_report.md` section 7.
+One full pipeline on 1 × NVIDIA GeForce RTX 4090 (AutoDL), commit `5bbf507`, no local code changes. Shared settings: 1 epoch, batch 8192, embedding size 16, Adam `lr=1e-3`, seed 2025, no L2, no dropout, AUC monitor, single seed, no tuning. Wall clock 12:15:54–12:57:40 CST (2505 s, about 41.8 min) for 9 tasks, all exit 0. Epoch time below is training only. The Criteo table below is still this 1-epoch, single-seed run. The Ali-CCP table is a preliminary single-seed result and has been superseded by the 3-seed numbers in section 6. Full write-up: `docs/RankMixer_tech_report.md`.
 
 Criteo_x1 test (BARS split, ~33M train rows). RankMixer is sequential, `T=8`, `D=64`, `L=2`, `k=2`, dense FFN.
 
@@ -111,25 +111,31 @@ AliCCP_x1 test (~38M train rows, `min_categr_count=10`), from the PaddleRec mirr
 | ShareBottom | 0.621760 | 0.619310 | 0.002200 | 0.620535 | 69 s |
 | MMoE | 0.619928 | 0.618001 | 0.002148 | 0.618964 | 78 s |
 
-Semantic grouping has the best conversion AUC (about +0.016 over PLE) and the highest mean AUC. Click AUC is about 0.002 below PLE. Sequential is clearly weaker than semantic on mean AUC, so the semantic token split is the part that moves the multi-task result. These are 1-epoch, single-seed, untuned numbers. Ali-CCP conversion positives are rare, so gaps around 0.001 can be noise. Re-check with multiple seeds, more epochs, and early stopping.
+On this single seed, semantic grouping has test conversion AUC 0.640612, about +0.016 over PLE, and the highest mean AUC. That conversion gap did **not** replicate under the 3-seed protocol in section 6. Treat the Ali-CCP rows above as a superseded preliminary table. Criteo stays 1 epoch and seed 2025.
 
-## 6. Multi-seed early stopping (prepared, not yet run)
+## 6. Multi-seed and anti-collapse (recorded)
 
-`run_multiseed.sh` trains three models on the existing Ali-CCP parquet cache (it does not rebuild `feature_map.json`):
+Both follow-ups used the existing Ali-CCP parquet cache (no `feature_map.json` rebuild), seeds 2025 / 2026 / 2027, at most 6 epochs, `early_stop_patience: 1`, and the same optimizer settings as section 5. `monitor: AUC` is the unweighted mean of click AUC and conversion AUC. Test metrics come from the restored best checkpoint. Sample standard deviation uses \(n-1\). Archived tables and the summary CSV are in `benchmarks/rankmixer/results/`. Figures are in `docs/img/rankmixer/`.
 
-| Template expid | What it is |
-| --- | --- |
-| `MTRankMixer_aliccp_semantic_es` | Semantic tokens, per-task softmax gate |
-| `MTRankMixer_aliccp_semantic_mean_es` | Same trunk, `task_pooling: mean` |
-| `PLE_aliccp_es` | PLE baseline |
+The multi-seed jobs on the server used expids `*_ms_s{seed}` (gated checkpoint `MTRankMixer_aliccp_semantic_ms_s2025.model`). Hyperparameters match `configs/multiseed/`. The repo script still names its templates `*_es`. Anti-collapse expids match the script: `MTRankMixer_aliccp_semantic_residual_s{seed}` and `MTRankMixer_aliccp_semantic_entropy_s{seed}` (commit `5627b6c`, `gate_entropy_reg: 0.01`).
 
-Seeds 2025, 2026, 2027. Cap 6 epochs, `early_stop_patience: 1`. `monitor: AUC` is the unweighted mean of click AUC and conversion AUC, because `MultiTaskModel.evaluate` writes that mean back under the bare key `AUC`. Each job has its own log and a `timeout` (default 4 hours). The script writes `benchmarks/rankmixer/multiseed_summary.csv`. `multiseed_stats.py` prints mean ± sample standard deviation.
+Test mean AUC, 3 seeds:
+
+| Model | click AUC | conv AUC | mean AUC |
+| --- | --- | --- | ---: |
+| Shared mean | 0.61824 ± 0.00257 | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
+| Residual gated pooling | 0.61815 ± 0.00197 | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
+| Entropy reg 0.01 | 0.61907 ± 0.00145 | 0.62844 ± 0.00868 | 0.62375 ± 0.00506 |
+| PLE | 0.61994 ± 0.00039 | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
+| Original per-task gating | 0.61835 ± 0.00160 | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
+
+Original per-task gating loses to shared mean (−0.00212 mean AUC; conversion −0.00434). On the seed-2025 checkpoint, 500k test rows, the conversion gate collapses onto the item token (0.970745) and drops the user token (0.025597). Click prefers user (0.645876). The two tasks learn different preferences; unconstrained softmax then saturates.
+
+Residual pooling is the best gated variant and has the smallest mean-AUC standard deviation (0.00150). It is about +0.0015 over PLE and over the original gate, and −0.00049 versus shared mean, inside one standard deviation. It does not clearly beat shared mean. Seed-2025 λ is 0.531656 (click) and 0.498624 (conversion). Effective conversion weights are about user 0.644 / item 0.183 / context 0.174, while the gate branch itself still saturates on user (0.952436). Entropy regularization at 0.01 flattens both gates (entropy 1.097763 / 1.098189, maximum \(\ln 3 = 1.0986\)), which is mean pooling. Every anti-collapse run peaks at epoch 1. In the earlier multi-seed run the only exception is shared-mean seed 2026, whose best epoch is 2.
 
 ```bash
 bash benchmarks/rankmixer/run_multiseed.sh 0
-python benchmarks/rankmixer/analyze_gates.py --gpu 0 \
-  --checkpoint model_zoo/multitask/MT_RankMixer/checkpoints/AliCCP_x1/MTRankMixer_aliccp_semantic_es_s2025.model \
-  --config benchmarks/rankmixer/configs/multiseed \
-  --expid MTRankMixer_aliccp_semantic_es \
-  --max_samples 500000
+bash benchmarks/rankmixer/run_anticollapse.sh 0
 ```
+
+`run_anticollapse.sh` writes under `/root/autodl-tmp/ac_out/` and then analyzes both seed-2025 checkpoints (500k rows). `anticollapse_summary.csv` marks the two analysis logs as failed because the summarizer only parses training logs; the markdown and png analyses themselves succeeded.
