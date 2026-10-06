@@ -52,11 +52,19 @@ echo "=== Testing SAM ===" && cd $home/SAM && python run_expid.py --expid SAM_te
 echo "=== Testing TransAct ===" && cd $home/TransAct && python run_expid.py --expid TransAct_test && \
 echo "=== Testing WideDeep ===" && cd $home/WideDeep/WideDeep_torch && python run_expid.py --expid WideDeep_test && \
 echo "=== Testing WuKong ===" && cd $home/WuKong && python run_expid.py --expid WuKong_test && \
+echo "=== Testing RankMixer ===" && cd $home/RankMixer && python run_expid.py --expid RankMixer_test --gpu -1 && \
+echo "=== Testing RankMixer semantic ===" && cd $home/RankMixer && python run_expid.py --expid RankMixer_semantic_test --gpu -1 && \
+echo "=== Testing RankMixer MoE ===" && cd $home/RankMixer && python run_expid.py --expid RankMixer_moe_test --gpu -1 && \
 echo "=== Testing xDeepFM ===" && cd $home/xDeepFM && python run_expid.py --expid xDeepFM_test && \
 
 # Multi-task recommendation
 echo "=== Testing ShareBottom ===" && cd $home/multitask/ShareBottom && python run_expid.py --expid ShareBottom_test && \
 echo "=== Testing MMoE ===" && cd $home/multitask/MMoE && python run_expid.py --expid MMoE_test && \
 echo "=== Testing PLE ===" && cd $home/multitask/PLE && python run_expid.py --expid PLE_test && \
+echo "=== Testing MTRankMixer ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_test --gpu -1 && \
+echo "=== Testing MTRankMixer semantic groups ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_group_test --gpu -1 && \
+echo "=== Testing MTRankMixer shared mean pool ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_mean_test --gpu -1 && \
+echo "=== Testing MTRankMixer residual mix ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_residual_test --gpu -1 && \
+echo "=== Testing MTRankMixer gate entropy ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_entropy_test --gpu -1 && \
 
 echo "All tests done."

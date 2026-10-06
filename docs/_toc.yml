@@ -37,6 +37,8 @@ parts:
 - caption: CONFIGURATION CHEETSHEETS
   chapters:
   - file: configurations.md
+  - file: RankMixer_tech_report.md
+    title: RankMixer
   
 - caption: API REFERENCES
   chapters:

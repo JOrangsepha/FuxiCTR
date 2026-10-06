@@ -1,0 +1,150 @@
+Base:
+    model_root: './checkpoints/'
+    num_workers: 3
+    verbose: 1
+    early_stop_patience: 2
+    pickle_feature_encoder: True
+    save_best_only: True
+    eval_steps: null
+    debug_mode: False
+    group_id: null
+    use_features: null
+    feature_specs: null
+    feature_config: null
+
+### CPU smoke test on tiny_parquet. token_dim must be divisible by num_tokens (H = T).
+RankMixer_test:
+    model: RankMixer
+    dataset_id: tiny_parquet
+    loss: 'binary_crossentropy'
+    metrics: ['logloss', 'AUC']
+    task: binary_classification
+    optimizer: adam
+    learning_rate: 1.0e-3
+    embedding_regularizer: 0
+    net_regularizer: 0
+    batch_size: 32
+    embedding_dim: 16
+    num_tokens: 2
+    token_dim: 32
+    num_layers: 2
+    ffn_multiplier: 2
+    token_grouping: sequential
+    feature_groups: null
+    use_sparse_moe: false
+    num_experts: 2
+    moe_lambda: 1.0e-3
+    mlp_hidden_units: [32]
+    mlp_hidden_activations: relu
+    mlp_batch_norm: false
+    net_dropout: 0
+    use_residual: true
+    use_layer_norm: true
+    epochs: 1
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'
+    num_workers: 0
+
+### Same tiny run with semantic groups taken from feature sources (user / item / context).
+RankMixer_semantic_test:
+    model: RankMixer
+    dataset_id: tiny_parquet
+    loss: 'binary_crossentropy'
+    metrics: ['logloss', 'AUC']
+    task: binary_classification
+    optimizer: adam
+    learning_rate: 1.0e-3
+    embedding_regularizer: 0
+    net_regularizer: 0
+    batch_size: 32
+    embedding_dim: 16
+    num_tokens: 3
+    token_dim: 24
+    num_layers: 1
+    ffn_multiplier: 2
+    token_grouping: semantic
+    feature_groups: [user, item, context]
+    use_sparse_moe: false
+    num_experts: 2
+    moe_lambda: 1.0e-3
+    mlp_hidden_units: []
+    mlp_hidden_activations: relu
+    mlp_batch_norm: false
+    net_dropout: 0
+    epochs: 1
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'
+    num_workers: 0
+
+### Sparse-MoE per-token FFN on the same tiny split.
+RankMixer_moe_test:
+    model: RankMixer
+    dataset_id: tiny_parquet
+    loss: 'binary_crossentropy'
+    metrics: ['logloss', 'AUC']
+    task: binary_classification
+    optimizer: adam
+    learning_rate: 1.0e-3
+    embedding_regularizer: 0
+    net_regularizer: 0
+    batch_size: 32
+    embedding_dim: 16
+    num_tokens: 2
+    token_dim: 16
+    num_layers: 1
+    ffn_multiplier: 2
+    token_grouping: sequential
+    feature_groups: null
+    use_sparse_moe: true
+    num_experts: 2
+    moe_lambda: 1.0e-3
+    mlp_hidden_units: []
+    mlp_hidden_activations: relu
+    mlp_batch_norm: false
+    net_dropout: 0
+    epochs: 1
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'
+    num_workers: 0
+
+### Modest 1-epoch Criteo_x1 setting for a later GPU comparison.
+### Dense FFN params are about 2 * k * L * T * D^2 = 262144, plus the tokenizer.
+RankMixer_criteo_x1:
+    model: RankMixer
+    dataset_id: Criteo_x1
+    loss: 'binary_crossentropy'
+    metrics: ['logloss', 'AUC']
+    task: binary_classification
+    optimizer: adam
+    learning_rate: 1.0e-3
+    embedding_regularizer: 0
+    net_regularizer: 0
+    batch_size: 8192
+    embedding_dim: 16
+    num_tokens: 8
+    token_dim: 64
+    num_layers: 2
+    ffn_multiplier: 2
+    token_grouping: sequential
+    feature_groups: null
+    use_sparse_moe: false
+    num_experts: 4
+    moe_lambda: 1.0e-3
+    mlp_hidden_units: [64]
+    mlp_hidden_activations: relu
+    mlp_batch_norm: false
+    net_dropout: 0
+    use_residual: true
+    use_layer_norm: true
+    epochs: 1
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'
+    num_workers: 4

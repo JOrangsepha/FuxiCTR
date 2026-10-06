@@ -1,3 +1,69 @@
+# 本 Fork 的贡献：RankMixer + MT-RankMixer
+
+这是我在 FuxiCTR 上做的多任务排序。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：CTR / CVR 各自对语义 token 做门控；多种子复核发现转化门控会塌缩；残差池化把共享 mean 加回去，保住可解释的任务门控。
+
+*This fork reproduces RankMixer and adds MT-RankMixer: per-task gates on semantic tokens, a measured gate collapse, and residual gated pooling. Residual matches shared mean pooling and does not clearly beat it.*
+
+**创新点**
+
+1. **Per-task token gating + 语义 token。** CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
+2. **门控塌缩的发现和可解释性分析。** 3 种子复核后，转化门控塌到商品 token（0.971），用户信息被丢掉。点击和转化学到了不同偏好。
+3. **残差门控池化。** \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。λ 约 0.5，转化的有效权重回到用户约 0.64 / 商品约 0.18 / 上下文约 0.17。
+
+**Ali-CCP test 平均 AUC**（3 种子，均值 ± 样本标准差，early stopping；PaddleRec 公开镜像）
+
+| 模型 | click AUC | conv AUC | 平均 AUC |
+| --- | --- | --- | ---: |
+| 共享 mean | 0.61824 ± 0.00257 | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
+| 残差门控 | 0.61815 ± 0.00197 | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
+| 熵正则 0.01 | 0.61907 ± 0.00145 | 0.62844 ± 0.00868 | 0.62375 ± 0.00506 |
+| PLE | 0.61994 ± 0.00039 | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
+| 原 per-task gating | 0.61835 ± 0.00160 | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
+
+残差版是门控类里最好、方差最小的，比 PLE 和原门控高约 0.0015，与共享 mean 打平（−0.0005，在一个标准差内）。**没有明显胜过共享 mean。**
+
+![种子 2025 的原 per-task gating：转化门控塌到商品 token（0.971）。](docs/img/rankmixer/multiseed_gate_weights.png)
+
+**Criteo_x1 test**（1 epoch、单种子 2025，没有做多种子）
+
+| 模型 | Test AUC | Test logloss |
+| --- | ---: | ---: |
+| DCNv2 | 0.808973 | 0.442537 |
+| RankMixer | 0.808522 | 0.443048 |
+| DNN | 0.807165 | 0.444495 |
+| WuKong | 0.806889 | 0.444488 |
+
+完整迭代、初步单种子表和局限见 [docs/RankMixer_tech_report.md](docs/RankMixer_tech_report.md)。
+
+```mermaid
+flowchart LR
+  U[用户 token] --> Mix[Token Mixing H=T]
+  I[商品 token] --> Mix
+  C[上下文 token] --> Mix
+  Mix --> FFN[Per-token FFN 加残差]
+  FFN --> Mean[共享 mean]
+  FFN --> G1[CTR 门控]
+  FFN --> G2[CVR 门控]
+  Mean --> L1["λ_click 混合"]
+  G1 --> L1
+  Mean --> L2["λ_conv 混合"]
+  G2 --> L2
+  L1 --> T1[CTR tower]
+  L2 --> T2[CVR tower]
+```
+
+```bash
+cd model_zoo/RankMixer && python run_expid.py --expid RankMixer_test --gpu -1
+cd model_zoo/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_test --gpu -1
+bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
+bash benchmarks/rankmixer/run_multiseed.sh 0
+bash benchmarks/rankmixer/run_anticollapse.sh 0
+```
+
+---
+
+以下为上游 FuxiCTR 原始 README。
+
 <div align="center">
 <img src="https://cdn.jsdelivr.net/gh/reczoo/FuxiCTR@main/docs/img/logo.png" alt="Logo" width="260"/>
 </div>
@@ -75,26 +141,28 @@ Click-through rate (CTR) prediction is a critical task for various industrial ap
 | 39  | CIKM'23           | [GDCN](./model_zoo/GDCN)         | [Towards Deeper, Lighter and Interpretable Cross Network for CTR Prediction](https://dl.acm.org/doi/pdf/10.1145/3583780.3615089) :triangular_flag_on_post:**Microsoft**                                                                                                               |           | `torch`       |
 | 40  | ICML'24          | [WuKong](./model_zoo/WuKong)               | [Wukong: Towards a Scaling Law for Large-Scale Recommendation](https://arxiv.org/abs/2403.02545) :triangular_flag_on_post:**Meta**                                                        |   [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/WuKong)    | `torch`       |
 | 41  | KDD'25          | [QNN-α](./model_zoo/QNN)               | [Revisiting Feature Interactions from the Perspective of Quadratic Neural Networks for Click-through Rate Prediction](https://arxiv.org/abs/2505.17999) :triangular_flag_on_post:**Huawei**     |   [:arrow_upper_right:](https://github.com/salmon1802/QNN/tree/main/checkpoints)     | `torch`       |
+| 42  | CIKM'25          | [RankMixer](./model_zoo/RankMixer)               | [RankMixer: Scaling Up Ranking Models in Industrial Recommenders](https://arxiv.org/abs/2507.15551) :triangular_flag_on_post:**ByteDance**     |       | `torch`       |
 |<tr><th colspan=6 align="center">:open_file_folder: **Behavior Sequence Modeling**</th></tr>|
-| 42  | KDD'18            | [DIN](./model_zoo/DIN)                   | [Deep Interest Network for Click-Through Rate Prediction](https://www.kdd.org/kdd2018/accepted-papers/view/deep-interest-network-for-click-through-rate-prediction) :triangular_flag_on_post:**Alibaba**        |   [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DIN)       | `torch`       |
-| 43  | AAAI'19           | [DIEN](./model_zoo/DIEN)                 | [Deep Interest Evolution Network for Click-Through Rate Prediction](https://arxiv.org/abs/1809.03672) :triangular_flag_on_post:**Alibaba**                                                                      |   [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DIEN)        | `torch`       |
-| 44  | DLP-KDD'19        | [BST](./model_zoo/BST)                   | [Behavior Sequence Transformer for E-commerce Recommendation in Alibaba](https://arxiv.org/abs/1905.06874) :triangular_flag_on_post:**Alibaba**                                                                 |  [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/BST)     | `torch`       |
-| 45  | CIKM'20           | [DMIN](./model_zoo/DMIN)                 | [Deep Multi-Interest Network for Click-through Rate Prediction](https://dl.acm.org/doi/10.1145/3340531.3412092) :triangular_flag_on_post:**Alibaba**                                                            | [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DMIN)                                                                                                                 | `torch`       |
-| 46  | AAAI'20           | [DMR](./model_zoo/DMR)                   | [Deep Match to Rank Model for Personalized Click-Through Rate Prediction](https://ojs.aaai.org/index.php/AAAI/article/view/5346) :triangular_flag_on_post:**Alibaba**                                           |    [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DMR)                                                                                                                  | `torch`       |
-| 47  | KDD'23           | [TransAct](./model_zoo/TransAct)                 | [TransAct: Transformer-based Realtime User Action Model for Recommendation at Pinterest](https://arxiv.org/abs/2306.00248) :triangular_flag_on_post:**Pinterest**                                                       | [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/TransAct)         | `torch`       |
+| 43  | KDD'18            | [DIN](./model_zoo/DIN)                   | [Deep Interest Network for Click-Through Rate Prediction](https://www.kdd.org/kdd2018/accepted-papers/view/deep-interest-network-for-click-through-rate-prediction) :triangular_flag_on_post:**Alibaba**        |   [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DIN)       | `torch`       |
+| 44  | AAAI'19           | [DIEN](./model_zoo/DIEN)                 | [Deep Interest Evolution Network for Click-Through Rate Prediction](https://arxiv.org/abs/1809.03672) :triangular_flag_on_post:**Alibaba**                                                                      |   [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DIEN)        | `torch`       |
+| 45  | DLP-KDD'19        | [BST](./model_zoo/BST)                   | [Behavior Sequence Transformer for E-commerce Recommendation in Alibaba](https://arxiv.org/abs/1905.06874) :triangular_flag_on_post:**Alibaba**                                                                 |  [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/BST)     | `torch`       |
+| 46  | CIKM'20           | [DMIN](./model_zoo/DMIN)                 | [Deep Multi-Interest Network for Click-through Rate Prediction](https://dl.acm.org/doi/10.1145/3340531.3412092) :triangular_flag_on_post:**Alibaba**                                                            | [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DMIN)                                                                                                                 | `torch`       |
+| 47  | AAAI'20           | [DMR](./model_zoo/DMR)                   | [Deep Match to Rank Model for Personalized Click-Through Rate Prediction](https://ojs.aaai.org/index.php/AAAI/article/view/5346) :triangular_flag_on_post:**Alibaba**                                           |    [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/DMR)                                                                                                                  | `torch`       |
+| 48  | KDD'23           | [TransAct](./model_zoo/TransAct)                 | [TransAct: Transformer-based Realtime User Action Model for Recommendation at Pinterest](https://arxiv.org/abs/2306.00248) :triangular_flag_on_post:**Pinterest**                                                       | [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/TransAct)         | `torch`       |
 |<tr><th colspan=6 align="center">:open_file_folder: **Long Sequence Modeling**</th></tr>|
-| 48  | CIKM'20          | [SIM](./model_zoo/LongCTR/SIM)                   | [Search-based User Interest Modeling with Lifelong Sequential Behavior Data for Click-Through Rate Prediction](https://arxiv.org/abs/2006.05639) :triangular_flag_on_post:**Alibaba**                                                               |                                                                                                                 | `torch`       |
-| 49  | DLP-KDD'22          | [ETA](./model_zoo/LongCTR/ETA)                   | [Efficient Long Sequential User Data Modeling for Click-Through Rate Prediction](https://arxiv.org/abs/2209.12212) :triangular_flag_on_post:**Alibaba**                                                               |                                                                                                                 | `torch`       |
-| 50  | CIKM'22           | [SDIM](./model_zoo/LongCTR/SDIM)                 | [Sampling Is All You Need on Modeling Long-Term User Behaviors for CTR Prediction](https://arxiv.org/abs/2205.10249) :triangular_flag_on_post:**Meituan**                                                       |                                                                                                                 | `torch`       |
-| 51  | KDD'23           | [TWIN](./model_zoo/LongCTR/TWIN)                 | [TWIN: TWo-stage Interest Network for Lifelong User Behavior Modeling in CTR Prediction at Kuaishou](https://arxiv.org/abs/2302.02352) :triangular_flag_on_post:**KuaiShou**                                                       |                                                                                                                 | `torch`       |
-| 52  | KDD'25           | [MIRRN](./model_zoo/LongCTR/MIRRN)                 | [Multi-granularity Interest Retrieval and Refinement Network for Long-Term User Behavior Modeling in CTR Prediction](https://arxiv.org/abs/2411.15005) :triangular_flag_on_post:**Huawei**                                                       |                                                                                                                 | `torch`       |
+| 49  | CIKM'20          | [SIM](./model_zoo/LongCTR/SIM)                   | [Search-based User Interest Modeling with Lifelong Sequential Behavior Data for Click-Through Rate Prediction](https://arxiv.org/abs/2006.05639) :triangular_flag_on_post:**Alibaba**                                                               |                                                                                                                 | `torch`       |
+| 50  | DLP-KDD'22          | [ETA](./model_zoo/LongCTR/ETA)                   | [Efficient Long Sequential User Data Modeling for Click-Through Rate Prediction](https://arxiv.org/abs/2209.12212) :triangular_flag_on_post:**Alibaba**                                                               |                                                                                                                 | `torch`       |
+| 51  | CIKM'22           | [SDIM](./model_zoo/LongCTR/SDIM)                 | [Sampling Is All You Need on Modeling Long-Term User Behaviors for CTR Prediction](https://arxiv.org/abs/2205.10249) :triangular_flag_on_post:**Meituan**                                                       |                                                                                                                 | `torch`       |
+| 52  | KDD'23           | [TWIN](./model_zoo/LongCTR/TWIN)                 | [TWIN: TWo-stage Interest Network for Lifelong User Behavior Modeling in CTR Prediction at Kuaishou](https://arxiv.org/abs/2302.02352) :triangular_flag_on_post:**KuaiShou**                                                       |                                                                                                                 | `torch`       |
+| 53  | KDD'25           | [MIRRN](./model_zoo/LongCTR/MIRRN)                 | [Multi-granularity Interest Retrieval and Refinement Network for Long-Term User Behavior Modeling in CTR Prediction](https://arxiv.org/abs/2411.15005) :triangular_flag_on_post:**Huawei**                                                       |                                                                                                                 | `torch`       |
 |<tr><th colspan=6 align="center">:open_file_folder: **Dynamic Weight Network**</th></tr>|
-| 53  | NeurIPS'22          | [APG](./model_zoo/APG)               | [APG: Adaptive Parameter Generation Network for Click-Through Rate Prediction](https://arxiv.org/abs/2203.16218) :triangular_flag_on_post:**Alibaba**                                |    [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/APG)                                                                                                   | `torch`       |
-| 54  | KDD'23        | [PPNet](./model_zoo/PEPNet)             | [PEPNet: Parameter and Embedding Personalized Network for Infusing with Personalized Prior Information](https://arxiv.org/abs/2302.01115) :triangular_flag_on_post:**KuaiShou**                          |    [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/PPNet)                                                                                                   | `torch`       |
+| 54  | NeurIPS'22          | [APG](./model_zoo/APG)               | [APG: Adaptive Parameter Generation Network for Click-Through Rate Prediction](https://arxiv.org/abs/2203.16218) :triangular_flag_on_post:**Alibaba**                                |    [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/APG)                                                                                                   | `torch`       |
+| 55  | KDD'23        | [PPNet](./model_zoo/PEPNet)             | [PEPNet: Parameter and Embedding Personalized Network for Infusing with Personalized Prior Information](https://arxiv.org/abs/2302.01115) :triangular_flag_on_post:**KuaiShou**                          |    [:arrow_upper_right:](https://github.com/reczoo/BARS/tree/main/ranking/ctr/PPNet)                                                                                                   | `torch`       |
 |<tr><th colspan=6 align="center">:open_file_folder: **Multi-Task Modeling**</th></tr>|
-| 55  |     Arxiv'17      | [ShareBottom](./model_zoo/multitask/ShareBottom)               | [An Overview of Multi-Task Learning in Deep Neural Networks](https://arxiv.org/abs/1706.05098)                                                                                            |                                                                                                                 | `torch`       |
-| 56  | KDD'18          | [MMoE](./model_zoo/multitask/MMOE)               | [Modeling Task Relationships in Multi-task Learning with Multi-Gate Mixture-of-Experts](https://dl.acm.org/doi/pdf/10.1145/3219819.3220007) :triangular_flag_on_post:**Google**                                                                                            |                                                                                                                 | `torch`       |
-| 57  | RecSys'20          | [PLE](./model_zoo/multitask/PLE)               | [Progressive Layered Extraction (PLE): A Novel Multi-Task Learning (MTL) Model for Personalized Recommendations](https://dl.acm.org/doi/10.1145/3383313.3412236) :triangular_flag_on_post:**Tencent**                                                                                            |                                                                                                                 | `torch`       |
+| 56  |     Arxiv'17      | [ShareBottom](./model_zoo/multitask/ShareBottom)               | [An Overview of Multi-Task Learning in Deep Neural Networks](https://arxiv.org/abs/1706.05098)                                                                                            |                                                                                                                 | `torch`       |
+| 57  | KDD'18          | [MMoE](./model_zoo/multitask/MMOE)               | [Modeling Task Relationships in Multi-task Learning with Multi-Gate Mixture-of-Experts](https://dl.acm.org/doi/pdf/10.1145/3219819.3220007) :triangular_flag_on_post:**Google**                                                                                            |                                                                                                                 | `torch`       |
+| 58  | RecSys'20          | [PLE](./model_zoo/multitask/PLE)               | [Progressive Layered Extraction (PLE): A Novel Multi-Task Learning (MTL) Model for Personalized Recommendations](https://dl.acm.org/doi/10.1145/3383313.3412236) :triangular_flag_on_post:**Tencent**                                                                                            |                                                                                                                 | `torch`       |
+| 59  | CIKM'25          | [MT-RankMixer](./model_zoo/multitask/MT_RankMixer)               | Multi-task extension of [RankMixer](https://arxiv.org/abs/2507.15551): shared token-mixing backbone, per-task token gates and towers. Original to this fork. :triangular_flag_on_post:**ByteDance** (backbone)                                                                                            |                                                                                                                 | `torch`       |
 
 ## Benchmarking
 
