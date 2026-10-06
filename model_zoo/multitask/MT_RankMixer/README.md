@@ -34,7 +34,7 @@ The model subclasses `MultiTaskModel` and returns `{label}_pred` for each label.
 | `feature_groups` | null | Semantic groups. Every feature is used exactly once. |
 | `gate_type` | `softmax` | `softmax`, `sigmoid` (L1-normalized), or `mean`. |
 | `task_pooling` | `gate` | `gate` keeps a per-task token gate. `mean` shares one mean-pool across towers. `residual` uses `h = λ * mean(tokens) + (1 - λ) * gated`, with one learned sigmoid scalar λ per task, initialized at 0.5. `gate_type: mean` selects the shared pool. |
-| `gate_entropy_reg` | 0 | Coefficient β of `-β * H(α)` added to the loss, summed over tasks after a batch mean. `0` leaves the loss unchanged. The anti-collapse run used `0.01` because ln 3 ≈ 1.099, so the largest bonus per task is about 0.011 (~7% of click logloss ~0.16). That scale overshot: both gates became uniform (entropy 1.097763 and 1.098189 vs maximum 1.0986). A smaller β such as 0.001–0.003 is the follow-up; 0.1 would rival the click loss. |
+| `gate_entropy_reg` | 0 | Coefficient β of `-β * H(α)` added to the loss, summed over tasks after a batch mean. `0` leaves the loss unchanged. The anti-collapse run used `0.01` because ln 3 ≈ 1.099, so the largest bonus per task is about 0.011 (~7% of click logloss ~0.16). That scale overshot to a uniform gate (entropy 1.097763 and 1.098189 vs maximum 1.0986). The later sweep also flattened 3-token gates at `0.003` (entropy 1.095964 / 1.097799) and at `0.001` (1.078908 / 1.096069). `0.1` would rival the click loss. |
 | `gate_temperature` | 1 | Divides gate logits before softmax or sigmoid. `1` is the unscaled gate. |
 | `tower_hidden_units` | [64] | Hidden units of each task tower. |
 | `use_sparse_moe` | false | Sparse-MoE per-token FFNs in the shared trunk. |
@@ -62,7 +62,9 @@ python run_expid.py --expid MTRankMixer_aliccp --gpu 0
 python run_expid.py --expid MTRankMixer_aliccp_semantic --gpu 0
 ```
 
-`MTRankMixer_aliccp` is the 1-epoch comparison point against MMoE, PLE, and ShareBottom. `MTRankMixer_aliccp_semantic` is the grouping ablation (user profile / item / shop-context, `T=3`, `D=48`). The single-seed semantic test conversion AUC 0.640612 is a preliminary number and was not replicated. Three seeds, test mean AUC: shared mean 0.62496 ± 0.00240, residual 0.62447 ± 0.00150, entropy 0.01 0.62375 ± 0.00506, PLE 0.62300 ± 0.00333, original per-task gating 0.62284 ± 0.00230. Residual does not clearly beat shared mean (−0.00049). The conversion gate of the original model collapses onto the item token (0.971). See [`../../../docs/RankMixer_tech_report.md`](../../../docs/RankMixer_tech_report.md).
+`MTRankMixer_aliccp` is the 1-epoch comparison point against MMoE, PLE, and ShareBottom. `MTRankMixer_aliccp_semantic` is the 3-token grouping ablation (user / item / context, `T=3`, `D=48`). The single-seed semantic test conversion AUC 0.640612 was not replicated. On 3 tokens, residual pooling (0.62447 ± 0.00150) does not clearly beat shared mean (0.62496 ± 0.00240).
+
+The later sweep splits the same 18 fields into 6 tokens (`token_dim` stays 48): user id `[101]`, user profile `[121..129]`, item id `[205]`, item category/shop/brand `[206,207,216]`, cross features `[508,509,702,853]`, scenario `[301]`. Reproducible expids are `MTR_sw_g6_mean`, `MTR_sw_g6_gate`, and `MTR_sw_g6_residual` in [`../../../benchmarks/rankmixer/configs/sweep`](../../../benchmarks/rankmixer/configs/sweep). Three seeds, test mean AUC: g6_residual 0.62724 ± 0.00359, g6_mean 0.62687 ± 0.00208, g6_gate 0.62635 ± 0.00283. The gain versus 3-token shared mean is about +0.0019 and is within about one standard deviation. g6_residual is only +0.00037 over g6_mean. On seed 2025, the plain 6-token conversion gate collapses onto item id (0.966), while residual gating stays mixed: click leans on user id (0.59), conversion on user profile (0.57), λ about 0.51 / 0.50. See [`../../../docs/RankMixer_tech_report.md`](../../../docs/RankMixer_tech_report.md).
 
 ## How this differs from MMoE
 

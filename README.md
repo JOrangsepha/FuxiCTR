@@ -1,28 +1,34 @@
 # 本 Fork 的贡献：RankMixer + MT-RankMixer
 
-这是我在 FuxiCTR 上做的多任务排序。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：CTR / CVR 各自对语义 token 做门控；多种子复核发现转化门控会塌缩；残差池化把共享 mean 加回去，保住可解释的任务门控。
+这是我在 FuxiCTR 上做的多任务排序。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：任务门控、塌缩分析、残差池化，以及把语义 token 从 3 个拆到 6 个。
 
-*This fork reproduces RankMixer and adds MT-RankMixer: per-task gates on semantic tokens, a measured gate collapse, and residual gated pooling. Residual matches shared mean pooling and does not clearly beat it.*
+*This fork reproduces RankMixer and adds MT-RankMixer. The latest Ali-CCP gain comes from splitting 3 semantic tokens into 6. Residual gating does not beat mean pooling under the same split; it keeps the gates from collapsing.*
 
 **创新点**
 
 1. **Per-task token gating + 语义 token。** CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
-2. **门控塌缩的发现和可解释性分析。** 3 种子复核后，转化门控塌到商品 token（0.971），用户信息被丢掉。点击和转化学到了不同偏好。
-3. **残差门控池化。** \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。λ 约 0.5，转化的有效权重回到用户约 0.64 / 商品约 0.18 / 上下文约 0.17。
+2. **门控塌缩的发现和可解释性分析。** 3 种子复核后，转化门控塌到商品 token（0.971）。拆成 6 个 token 之后，原门控的转化头再次塌到商品 ID（0.966）。
+3. **残差门控池化。** \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。6 token 上 λ 约 0.51 / 0.50，点击侧重用户 ID，转化侧重用户画像，门没有塌缩。
+4. **细粒度语义 tokenization 带来主要收益。** 3 token 共享 mean 到 6 token 共享 mean，test 平均 AUC 约 +0.0019，主要在转化 AUC。同一切分下残差只比 mean 高约 +0.0004。
 
 **Ali-CCP test 平均 AUC**（3 种子，均值 ± 样本标准差，early stopping；PaddleRec 公开镜像）
 
-| 模型 | click AUC | conv AUC | 平均 AUC |
-| --- | --- | --- | ---: |
-| 共享 mean | 0.61824 ± 0.00257 | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
-| 残差门控 | 0.61815 ± 0.00197 | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
-| 熵正则 0.01 | 0.61907 ± 0.00145 | 0.62844 ± 0.00868 | 0.62375 ± 0.00506 |
-| PLE | 0.61994 ± 0.00039 | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
-| 原 per-task gating | 0.61835 ± 0.00160 | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
+| 模型 | conv AUC | 平均 AUC |
+| --- | --- | ---: |
+| g6_residual（6 token） | 0.63468 ± 0.00680 | 0.62724 ± 0.00359 |
+| g6_mean（6 token） | 0.63473 ± 0.00327 | 0.62687 ± 0.00208 |
+| g6_gate（6 token） | 0.63442 ± 0.00177 | 0.62635 ± 0.00283 |
+| 共享 mean（3 token） | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
+| res_ent0001（3 token） | 0.63132 ± 0.00068 | 0.62488 ± 0.00044 |
+| 残差门控（3 token） | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
+| PLE | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
+| 原 per-task gating（3 token） | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
 
-残差版是门控类里最好、方差最小的，比 PLE 和原门控高约 0.0015，与共享 mean 打平（−0.0005，在一个标准差内）。**没有明显胜过共享 mean。**
+6 token 相对 3 token 共享 mean 大约高 0.0019，约一个标准差，有迹象但不确定。`g6_residual` 相对同 tokenization 的 `g6_mean` 只高 +0.0004，打平。残差留下的是可解释的任务门：种子 2025 上点击偏用户 ID（0.59），转化偏用户画像（0.57）。
 
-![种子 2025 的原 per-task gating：转化门控塌到商品 token（0.971）。](docs/img/rankmixer/multiseed_gate_weights.png)
+![6 token 原门控：转化塌到商品 ID（0.966）。](docs/img/rankmixer/gate_g6_gate_s2025.png)
+
+![6 token 残差门控：点击偏用户 ID，转化偏用户画像，λ 约 0.5。](docs/img/rankmixer/gate_g6_residual_s2025.png)
 
 **Criteo_x1 test**（1 epoch、单种子 2025，没有做多种子）
 
@@ -58,6 +64,7 @@ cd model_zoo/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_t
 bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
 bash benchmarks/rankmixer/run_multiseed.sh 0
 bash benchmarks/rankmixer/run_anticollapse.sh 0
+bash benchmarks/rankmixer/run_sweep.sh 0
 ```
 
 ---

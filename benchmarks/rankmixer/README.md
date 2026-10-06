@@ -139,3 +139,35 @@ bash benchmarks/rankmixer/run_anticollapse.sh 0
 ```
 
 `run_anticollapse.sh` writes under `/root/autodl-tmp/ac_out/` and then analyzes both seed-2025 checkpoints (500k rows). `anticollapse_summary.csv` marks the two analysis logs as failed because the summarizer only parses training logs; the markdown and png analyses themselves succeeded.
+
+## 7. Finer tokens and a 21-run sweep (recorded)
+
+`configs/sweep/` and `run_sweep.sh` repeat the Oct 6 2026 sweep: seeds 2025 / 2026 / 2027, same optimizer and early-stop budget, existing Ali-CCP parquet. Six semantic tokens, `token_dim: 48`: user id `[101]`, user profile `[121,122,124,125,126,127,128,129]`, item id `[205]`, item category/shop/brand `[206,207,216]`, cross features `[508,509,702,853]`, scenario `[301]`. Templates:
+
+| Template expid | What it is |
+| --- | --- |
+| `MTR_sw_g6_mean` | 6 tokens, shared mean |
+| `MTR_sw_g6_gate` | 6 tokens, per-task softmax gate |
+| `MTR_sw_g6_residual` | 6 tokens, residual gated pooling |
+| `MTR_sw_ent0001` / `MTR_sw_ent0003` | 3-token gate, entropy 0.001 / 0.003 |
+| `MTR_sw_res_ent0001` | 3-token residual, entropy 0.001 |
+| `MTR_sw_res_temp2` | 3-token residual, `gate_temperature: 2` |
+
+The script runs one job at a time and writes `/root/autodl-tmp/sw_out/`. The recorded run started three jobs at once; nine first attempts died with Ray `LocalRayletDiedError` and were rerun. All 21 final runs exited 0. Two of them (`ent0001` seed 2027, `g6_gate` seed 2027) peak at epoch 2; the other 19 peak at epoch 1.
+
+Test mean AUC:
+
+| Variant | conv AUC | mean AUC |
+| --- | --- | ---: |
+| g6_residual | 0.63468 ± 0.00680 | 0.62724 ± 0.00359 |
+| g6_mean | 0.63473 ± 0.00327 | 0.62687 ± 0.00208 |
+| g6_gate | 0.63442 ± 0.00177 | 0.62635 ± 0.00283 |
+| shared mean, 3 tokens | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
+| res_ent0001 | 0.63132 ± 0.00068 | 0.62488 ± 0.00044 |
+| PLE | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
+
+Moving shared mean from 3 tokens to 6 tokens is +0.00191 mean AUC and about +0.0031 conversion AUC, on the order of one standard deviation: suggestive, not conclusive. `g6_residual` is +0.00037 over `g6_mean` (a tie) and +0.00424 over PLE. On the seed-2025 checkpoint, `g6_gate` conversion collapses onto item id (0.966156). `g6_residual` does not: click leans on user id (0.592475), conversion on user profile (0.567906), λ 0.510613 / 0.496720. Entropy 0.001 and 0.003 flatten the 3-token gates; temperature 2 leaves them peaked (entropy 0.894404 / 0.843908) and does not raise AUC. Tables and figures: `benchmarks/rankmixer/results/sweep_results.md`, `docs/img/rankmixer/gate_g6_gate_s2025.png`, `docs/img/rankmixer/gate_g6_residual_s2025.png`.
+
+```bash
+bash benchmarks/rankmixer/run_sweep.sh 0
+```
