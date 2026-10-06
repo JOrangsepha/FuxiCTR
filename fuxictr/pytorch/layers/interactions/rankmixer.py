@@ -633,16 +633,21 @@ class TaskTokenGate(nn.Module):
         num_tokens (int): Number of tokens.
         token_dim (int): Token dimension.
         gate_type (str): ``"softmax"`` or ``"sigmoid"``. Default: ``"softmax"``.
+        temperature (float): Divides the gate logits. ``1`` leaves them unchanged.
+            Values above 1 flatten the gate. Default: ``1``.
     """
-    def __init__(self, num_tasks, num_tokens, token_dim, gate_type="softmax"):
+    def __init__(self, num_tasks, num_tokens, token_dim, gate_type="softmax", temperature=1.0):
         super(TaskTokenGate, self).__init__()
         if gate_type not in ("softmax", "sigmoid"):
             raise ValueError("gate_type must be 'softmax' or 'sigmoid'.")
         if num_tasks < 1:
             raise ValueError("num_tasks must be positive.")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive.")
         self.num_tasks = num_tasks
         self.num_tokens = num_tokens
         self.gate_type = gate_type
+        self.temperature = float(temperature)
         self.score = nn.ModuleList([nn.Linear(token_dim, 1) for _ in range(num_tasks)])
 
     def forward(self, tokens):
@@ -657,7 +662,7 @@ class TaskTokenGate(nn.Module):
         """
         mixed, gates = [], []
         for scorer in self.score:
-            logits = scorer(tokens).squeeze(-1)
+            logits = scorer(tokens).squeeze(-1) / self.temperature
             if self.gate_type == "softmax":
                 gate = torch.softmax(logits, dim=-1)
             else:

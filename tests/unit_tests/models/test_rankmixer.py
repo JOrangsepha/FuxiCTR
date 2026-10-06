@@ -374,6 +374,57 @@ class TestModels(unittest.TestCase):
             self._mt_model(task_pooling="attn")
         with self.assertRaises(ValueError):
             self._mt_model(gate_type="relu")
+        with self.assertRaises(ValueError):
+            self._mt_model(task_pooling="residual", gate_type="mean")
+        with self.assertRaises(ValueError):
+            self._mt_model(task_pooling="mean", gate_entropy_reg=0.01)
+
+    def test_residual_mix_starts_at_half_and_stays_in_unit_interval(self):
+        model = self._mt_model(task_pooling="residual")
+        lambdas = model.mix_lambdas()
+        self.assertEqual(tuple(lambdas.shape), (2,))
+        self.assertTrue(torch.all(lambdas > 0))
+        self.assertTrue(torch.all(lambdas < 1))
+        self.assertTrue(torch.allclose(lambdas, torch.full((2,), 0.5)))
+        tokens = torch.randn(3, 2, 8)
+        model.lambda_raw.data.copy_(torch.tensor([8.0, -8.0]))
+        mixed, gates = model.mix_tokens(tokens)
+        self.assertEqual(tuple(mixed[0].shape), (3, 8))
+        self.assertEqual(tuple(gates[0].shape), (3, 2))
+        shared = tokens.mean(dim=1)
+        gated, _ = model.task_gate(tokens)
+        mix = torch.sigmoid(model.lambda_raw)
+        expected0 = mix[0] * shared + (1.0 - mix[0]) * gated[0]
+        expected1 = mix[1] * shared + (1.0 - mix[1]) * gated[1]
+        self.assertTrue(torch.allclose(mixed[0], expected0, atol=1e-5))
+        self.assertTrue(torch.allclose(mixed[1], expected1, atol=1e-5))
+        # Large positive raw λ is near the shared mean; large negative is the gate.
+        self.assertTrue(torch.allclose(mixed[0], shared, atol=1e-3))
+        self.assertTrue(torch.allclose(mixed[1], gated[1], atol=1e-3))
+        out = model(self._batch())
+        y = [torch.zeros(3, 1), torch.ones(3, 1)]
+        loss = model.compute_loss(out, y)
+        loss.backward()
+        self.assertIsNotNone(model.lambda_raw.grad)
+        self.assertTrue(torch.isfinite(model.lambda_raw.grad).all())
+
+    def test_entropy_regularizer_is_in_the_loss_and_backprops(self):
+        model = self._mt_model(gate_entropy_reg=0.01)
+        batch = self._batch()
+        out = model(batch)
+        self.assertIn("gate_entropy", out)
+        self.assertGreater(float(out["gate_entropy"].detach()), 0.0)
+        y = [torch.zeros(3, 1), torch.ones(3, 1)]
+        full = model.compute_loss(out, y)
+        beta = model.gate_entropy_reg
+        model.gate_entropy_reg = 0.0
+        base = model.compute_loss(out, y)
+        model.gate_entropy_reg = beta
+        self.assertTrue(torch.allclose(full, base - beta * out["gate_entropy"]))
+        model.zero_grad()
+        out["gate_entropy"].backward()
+        self.assertIsNotNone(model.task_gate.score[0].weight.grad)
+        self.assertGreater(float(model.task_gate.score[0].weight.grad.abs().sum()), 0.0)
 
     def test_gate_summary_slices_and_log_parser(self):
         import importlib.util
@@ -417,6 +468,9 @@ Monitor(max)=0.600000 STOP!
         self.assertEqual(best_epoch, "1")
         self.assertAlmostEqual(metrics["click_auc"], 0.62)
         self.assertAlmostEqual(metrics["conversion_auc"], 0.64)
+        uniform = np.full((4, 2, 3), 1.0 / 3.0)
+        entropy = gates.mean_gate_entropy(uniform)
+        self.assertTrue(np.allclose(entropy, np.log(3.0), atol=1e-6))
 
 
 if __name__ == "__main__":

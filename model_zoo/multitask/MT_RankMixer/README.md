@@ -31,7 +31,9 @@ The model subclasses `MultiTaskModel` and returns `{label}_pred` for each label.
 | `token_grouping` | `sequential` | `sequential` or `semantic`. |
 | `feature_groups` | null | Semantic groups. Every feature is used exactly once. |
 | `gate_type` | `softmax` | `softmax`, `sigmoid` (L1-normalized), or `mean`. |
-| `task_pooling` | `gate` | `gate` keeps a per-task token gate. `mean` shares one mean-pool across towers. `gate_type: mean` selects the same ablation. |
+| `task_pooling` | `gate` | `gate` keeps a per-task token gate. `mean` shares one mean-pool across towers. `residual` uses `h = λ * mean(tokens) + (1 - λ) * gated`, with one learned sigmoid scalar λ per task, initialized at 0.5. `gate_type: mean` selects the shared pool. |
+| `gate_entropy_reg` | 0 | Coefficient β of `-β * H(α)` added to the loss, summed over tasks after a batch mean. `0` leaves the loss unchanged. The anti-collapse run uses `0.01`: for 3 tokens the maximum entropy is ln 3 ≈ 1.099, so the largest bonus per task is about 0.011, roughly 7% of the click logloss (~0.16) and well below it. `0.1` would rival the click loss and push the gate toward uniform. `0.001` is smaller than the conversion logloss and is unlikely to pull a collapsed gate off a vertex. |
+| `gate_temperature` | 1 | Divides gate logits before softmax or sigmoid. `1` is the unscaled gate. |
 | `tower_hidden_units` | [64] | Hidden units of each task tower. |
 | `use_sparse_moe` | false | Sparse-MoE per-token FFNs in the shared trunk. |
 | `moe_lambda` | 1e-3 | L1 penalty on the ReLU gates. |
@@ -45,6 +47,8 @@ cd model_zoo/multitask/MT_RankMixer
 python run_expid.py --expid MTRankMixer_test --gpu -1
 python run_expid.py --expid MTRankMixer_group_test --gpu -1
 python run_expid.py --expid MTRankMixer_mean_test --gpu -1
+python run_expid.py --expid MTRankMixer_residual_test --gpu -1
+python run_expid.py --expid MTRankMixer_entropy_test --gpu -1
 ```
 
 `MTRankMixer_group_test` uses semantic groups (all categorical fields in one token, all numerical fields in the other) and `gate_type: sigmoid`.

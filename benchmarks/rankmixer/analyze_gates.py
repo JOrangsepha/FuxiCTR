@@ -6,7 +6,10 @@ and reports the mean and sample standard deviation of the gate on the user,
 item, and context tokens. Slices: all rows, click = 1, conversion = 1.
 
 The shared mean-pool ablation has no gate. This script exits if the loaded
-model was built with ``task_pooling: mean``.
+model was built with ``task_pooling: mean``. Residual pooling
+(``task_pooling: residual``) still has a gate, so it is included, and the
+learned per-task mix weight λ_k is written next to the table. Every run also
+reports the mean gate entropy in nats.
 
 Example (after run_multiseed.sh, from the repo root on the GPU machine)::
 
@@ -103,6 +106,63 @@ def render_markdown(rows, token_names):
     return "\n".join(lines) + "\n"
 
 
+def mean_gate_entropy(weights):
+    """Mean entropy, in nats, of each task gate.
+
+    Args:
+        weights (np.ndarray): Shape ``(n, num_tasks, num_tokens)``.
+
+    Returns:
+        np.ndarray: Shape ``(num_tasks,)``.
+    """
+    probs = np.clip(np.asarray(weights, dtype=np.float64), 1e-8, 1.0)
+    return (-(probs * np.log(probs)).sum(axis=-1)).mean(axis=0)
+
+
+def render_entropy(weights, click, conversion, task_names):
+    """Markdown table of mean gate entropy on the same slices as the gate table."""
+    weights = np.asarray(weights, dtype=np.float64)
+    click = np.asarray(click).reshape(-1)
+    conversion = np.asarray(conversion).reshape(-1)
+    slices = (
+        ("all", np.ones(weights.shape[0], dtype=bool)),
+        ("click=1", click == 1),
+        ("conversion=1", conversion == 1),
+    )
+    lines = [
+        "## Mean gate entropy (nats)",
+        "",
+        "| slice | task | n | entropy |",
+        "| --- | --- | --- | --- |",
+    ]
+    for slice_name, mask in slices:
+        chosen = weights[mask]
+        count = int(chosen.shape[0])
+        if count == 0:
+            entropy = [None] * len(task_names)
+        else:
+            entropy = mean_gate_entropy(chosen)
+        for task_index, task_name in enumerate(task_names):
+            cell = "" if entropy[task_index] is None else "{:.6f}".format(float(entropy[task_index]))
+            lines.append("| {} | {} | {} | {} |".format(slice_name, task_name, count, cell))
+    return "\n".join(lines) + "\n"
+
+
+def render_lambdas(task_names, lambdas):
+    """Markdown table of residual mix weights. ``lambdas`` is shape ``(num_tasks,)``."""
+    lines = [
+        "## Residual mix weight λ",
+        "",
+        "h = λ * mean(tokens) + (1 - λ) * gated mix. λ is a learned sigmoid scalar per task.",
+        "",
+        "| task | lambda |",
+        "| --- | --- |",
+    ]
+    for task_name, value in zip(task_names, lambdas):
+        lines.append("| {} | {:.6f} |".format(task_name, float(value)))
+    return "\n".join(lines) + "\n"
+
+
 def plot_gates(rows, token_names, figure_path):
     """Grouped bars of mean gate weight. One panel per slice."""
     import matplotlib
@@ -158,10 +218,10 @@ def collect_gates(model, data_generator, max_samples):
     """Run the test generator and stack gate weights up to ``max_samples``."""
     import torch
 
-    if model.task_pooling != "gate" or model.task_gate is None:
+    if model.task_gate is None:
         raise SystemExit(
             "This checkpoint uses shared mean pooling and has no per-task gate. "
-            "Load MTRankMixer_aliccp_semantic_es_s2025 instead.")
+            "Load a task_pooling=gate or task_pooling=residual checkpoint instead.")
     labels = model.feature_map.labels
     weight_parts = []
     click_parts = []
@@ -275,16 +335,23 @@ def main():
     task_names = list(feature_map.labels)
     rows = summarize_gates(weights, click, conversion, token_names, task_names)
     table = render_markdown(rows, token_names)
+    entropy_table = render_entropy(weights, click, conversion, task_names)
+    lambda_table = ""
+    lambdas = model.mix_lambdas()
+    if lambdas is not None:
+        lambda_table = render_lambdas(task_names, lambdas.detach().cpu().numpy())
     note = (
         "# MT-RankMixer token gate weights\n\n"
         "Checkpoint: `{}`\n\n"
-        "Rows used: {} (cap {}). Sample standard deviation (n - 1). "
+        "Rows used: {} (cap {}). task_pooling: `{}`. "
+        "Sample standard deviation (n - 1). "
         "Gates sum to 1 over tokens inside each task.\n\n"
-    ).format(checkpoint, int(weights.shape[0]), args.max_samples)
+    ).format(checkpoint, int(weights.shape[0]), args.max_samples, model.task_pooling)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(note + table)
+    body = note + table + "\n" + entropy_table + "\n" + lambda_table
+    output.write_text(body)
     plot_gates(rows, token_names, figure)
-    print(note + table)
+    print(body)
     print("wrote {} and {}".format(output, figure))
 
 

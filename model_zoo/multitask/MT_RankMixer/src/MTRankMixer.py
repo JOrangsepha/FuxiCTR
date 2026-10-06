@@ -20,8 +20,12 @@ Per-task token gates and towers are original to this implementation and are
 not in the paper. The paper mean-pools tokens once for every task head.
 ``task_pooling: mean`` (or ``gate_type: mean``) restores that shared pool so
 the per-task gate can be ablated without changing the trunk or the towers.
+``task_pooling: residual`` mixes that shared pool back in with a learned
+per-task weight so a collapsed gate cannot drop a token entirely.
+``gate_entropy_reg`` adds an entropy bonus on the token gate. Both default off.
 """
 
+import torch
 from torch import nn
 from fuxictr.pytorch.models import MultiTaskModel
 from fuxictr.pytorch.layers import FeatureEmbedding, MLP_Block, TaskTokenGate, build_rankmixer_stack
@@ -32,11 +36,11 @@ def resolve_task_pooling(task_pooling="gate", gate_type="softmax"):
 
     ``task_pooling="gate"`` with ``gate_type`` ``softmax`` or ``sigmoid`` is the
     default per-task gate. ``task_pooling="mean"`` or ``gate_type="mean"``
-    shares one token mean-pool across tasks. Setting either switch to mean
-    selects the shared pool.
+    shares one token mean-pool across tasks. ``task_pooling="residual"`` keeps
+    the per-task gate and mixes it with that shared pool.
 
     Args:
-        task_pooling (str): ``"gate"`` or ``"mean"``. Default: ``"gate"``.
+        task_pooling (str): ``"gate"``, ``"mean"``, or ``"residual"``.
         gate_type (str): ``"softmax"``, ``"sigmoid"``, or ``"mean"``.
 
     Returns:
@@ -45,13 +49,33 @@ def resolve_task_pooling(task_pooling="gate", gate_type="softmax"):
     Raises:
         ValueError: If the combination is not one of the supported switches.
     """
-    if task_pooling not in ("gate", "mean"):
-        raise ValueError("task_pooling must be 'gate' or 'mean'.")
+    if task_pooling not in ("gate", "mean", "residual"):
+        raise ValueError("task_pooling must be 'gate', 'mean', or 'residual'.")
     if gate_type not in ("softmax", "sigmoid", "mean"):
         raise ValueError("gate_type must be 'softmax', 'sigmoid', or 'mean'.")
-    if task_pooling == "mean" or gate_type == "mean":
+    if task_pooling == "residual" and gate_type == "mean":
+        raise ValueError("task_pooling='residual' needs a token gate, not gate_type='mean'.")
+    if task_pooling == "mean" or (task_pooling == "gate" and gate_type == "mean"):
         return "mean", "mean"
+    if task_pooling == "residual":
+        return "residual", gate_type
     return "gate", gate_type
+
+
+def batch_mean_gate_entropy(gates):
+    """Batch-mean token-gate entropy for each task.
+
+    Args:
+        gates (list): One ``(batch, num_tokens)`` tensor per task. Rows sum to 1.
+
+    Returns:
+        torch.Tensor: Shape ``(num_tasks,)``. Entropy is in nats.
+    """
+    entropies = []
+    for gate in gates:
+        probs = gate.clamp_min(1e-8)
+        entropies.append(-(probs * probs.log()).sum(dim=-1).mean())
+    return torch.stack(entropies)
 
 
 class MTRankMixer(MultiTaskModel):
@@ -60,6 +84,8 @@ class MTRankMixer(MultiTaskModel):
     Each task learns a gate over the output tokens (softmax, or sigmoid followed
     by L1 normalization) and a private MLP tower. ``task_pooling="mean"`` skips
     that gate and feeds every tower the same mean-pooled token vector.
+    ``task_pooling="residual"`` uses
+    ``h_k = λ_k * mean(x) + (1 - λ_k) * gated_k`` with a learned λ_k in (0, 1).
     Token grouping is the same switch as single-task RankMixer: sequential
     chunks by default, or explicit semantic groups from the config.
 
@@ -79,8 +105,12 @@ class MTRankMixer(MultiTaskModel):
         feature_groups (list or None): Semantic groups.
         gate_type (str): ``"softmax"``, ``"sigmoid"``, or ``"mean"``.
             ``"mean"`` is an alias of ``task_pooling="mean"``. Default: ``"softmax"``.
-        task_pooling (str): ``"gate"`` (per-task token gate) or ``"mean"``
-            (one shared mean-pool for every task tower). Default: ``"gate"``.
+        task_pooling (str): ``"gate"``, ``"mean"``, or ``"residual"``.
+            Default: ``"gate"``.
+        gate_entropy_reg (float): Weight β of ``-β * H(α_k)`` added to the loss.
+            ``0`` disables it. Default: ``0``.
+        gate_temperature (float): Softmax/sigmoid temperature. ``1`` is the
+            unscaled gate. Default: ``1``.
         tower_hidden_units (list): Hidden units of each task tower. Default: ``[64]``.
         tower_hidden_activations (str): Tower activation. Default: ``"relu"``.
         tower_batch_norm (bool): BatchNorm in the towers. Default: ``False``.
@@ -110,6 +140,8 @@ class MTRankMixer(MultiTaskModel):
                  feature_groups=None,
                  gate_type="softmax",
                  task_pooling="gate",
+                 gate_entropy_reg=0.0,
+                 gate_temperature=1.0,
                  tower_hidden_units=[64],
                  tower_hidden_activations="relu",
                  tower_batch_norm=False,
@@ -149,14 +181,28 @@ class MTRankMixer(MultiTaskModel):
             use_layer_norm=use_layer_norm)
         self.num_tokens = num_tokens
         self.task_pooling, self.gate_type = resolve_task_pooling(task_pooling, gate_type)
-        if self.task_pooling == "gate":
+        self.gate_entropy_reg = float(gate_entropy_reg)
+        self.gate_temperature = float(gate_temperature)
+        if self.gate_entropy_reg < 0:
+            raise ValueError("gate_entropy_reg must be non-negative.")
+        if self.gate_temperature <= 0:
+            raise ValueError("gate_temperature must be positive.")
+        if self.task_pooling in ("gate", "residual"):
             self.task_gate = TaskTokenGate(num_tasks=self.num_tasks,
                                            num_tokens=num_tokens,
                                            token_dim=token_dim,
-                                           gate_type=self.gate_type)
+                                           gate_type=self.gate_type,
+                                           temperature=self.gate_temperature)
         else:
             # Shared mean-pool ablation: no per-task gate parameters.
             self.task_gate = None
+        if self.task_pooling == "residual":
+            # sigmoid(0) = 0.5, so each task starts as an equal mix.
+            self.lambda_raw = nn.Parameter(torch.zeros(self.num_tasks))
+        else:
+            self.lambda_raw = None
+        if self.gate_entropy_reg > 0 and self.task_gate is None:
+            raise ValueError("gate_entropy_reg requires task_pooling 'gate' or 'residual'.")
         self.tower = nn.ModuleList([
             MLP_Block(input_dim=token_dim,
                       output_dim=1,
@@ -171,12 +217,24 @@ class MTRankMixer(MultiTaskModel):
         self.reset_parameters()
         self.model_to_device()
 
+    def mix_lambdas(self):
+        """Per-task residual mix weights, each in ``(0, 1)``.
+
+        Returns:
+            torch.Tensor or None: Shape ``(num_tasks,)`` when
+            ``task_pooling="residual"``, else ``None``.
+        """
+        if self.lambda_raw is None:
+            return None
+        return torch.sigmoid(self.lambda_raw)
+
     def mix_tokens(self, tokens):
         """Pool RankMixer tokens for each task.
 
         In gate mode each task has its own weights over tokens. In mean mode
         every task receives the same mean-pooled vector and the gate list is
-        ``None``.
+        ``None``. In residual mode
+        ``h_k = λ_k * mean_t(x_t) + (1 - λ_k) * sum_t α_{k,t} x_t``.
 
         Args:
             tokens (torch.Tensor): Shape ``(batch, num_tokens, token_dim)``.
@@ -188,7 +246,16 @@ class MTRankMixer(MultiTaskModel):
         if self.task_pooling == "mean":
             shared = tokens.mean(dim=1)
             return [shared for _ in range(self.num_tasks)], None
-        return self.task_gate(tokens)
+        gated, gates = self.task_gate(tokens)
+        if self.task_pooling == "gate":
+            return gated, gates
+        shared = tokens.mean(dim=1)
+        lambdas = self.mix_lambdas()
+        mixed = []
+        for index, task_vector in enumerate(gated):
+            mix = lambdas[index]
+            mixed.append(mix * shared + (1.0 - mix) * task_vector)
+        return mixed, gates
 
     def forward(self, inputs):
         """Encode tokens once, then pool and predict each task.
@@ -202,7 +269,7 @@ class MTRankMixer(MultiTaskModel):
         X = self.get_inputs(inputs)
         tokens = self.tokenizer(self.embedding_layer(X))
         tokens, moe_reg = self.encoder(tokens)
-        mixed, _ = self.mix_tokens(tokens)
+        mixed, gates = self.mix_tokens(tokens)
         labels = self.feature_map.labels
         return_dict = {}
         for i in range(self.num_tasks):
@@ -210,6 +277,9 @@ class MTRankMixer(MultiTaskModel):
             return_dict["{}_pred".format(labels[i])] = self.output_activation[i](logit)
         if moe_reg is not None:
             return_dict["moe_reg"] = moe_reg
+        if self.gate_entropy_reg > 0:
+            # Sum of per-task batch-mean entropies. The loss subtracts β times this.
+            return_dict["gate_entropy"] = batch_mean_gate_entropy(gates).sum()
         return return_dict
 
     def add_loss(self, return_dict, y_true):
@@ -226,4 +296,8 @@ class MTRankMixer(MultiTaskModel):
         moe_reg = return_dict.get("moe_reg")
         if moe_reg is not None:
             loss = loss + self.moe_lambda * moe_reg
+        gate_entropy = return_dict.get("gate_entropy")
+        if gate_entropy is not None and self.gate_entropy_reg > 0:
+            # -β H(α). High entropy (a flat gate) lowers the loss.
+            loss = loss - self.gate_entropy_reg * gate_entropy
         return loss

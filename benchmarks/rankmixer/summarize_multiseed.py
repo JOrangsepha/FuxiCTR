@@ -70,9 +70,13 @@ def main():
         expid = log_path.stem
         seed_match = re.search(r"_s(\d+)$", expid)
         seed = seed_match.group(1) if seed_match else ""
-        if expid.startswith("MTRankMixer_aliccp_semantic_mean_es"):
+        if expid.startswith("MTRankMixer_aliccp_semantic_mean"):
             model = "MTRankMixer_semantic_mean"
-        elif expid.startswith("MTRankMixer_aliccp_semantic_es"):
+        elif expid.startswith("MTRankMixer_aliccp_semantic_residual"):
+            model = "MTRankMixer_semantic_residual"
+        elif expid.startswith("MTRankMixer_aliccp_semantic_entropy"):
+            model = "MTRankMixer_semantic_entropy"
+        elif expid.startswith("MTRankMixer_aliccp_semantic"):
             model = "MTRankMixer_semantic"
         elif expid.startswith("PLE_aliccp_es"):
             model = "PLE"
