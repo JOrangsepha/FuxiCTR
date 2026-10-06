@@ -30,7 +30,8 @@ The model subclasses `MultiTaskModel` and returns `{label}_pred` for each label.
 | `ffn_multiplier` | 4 | Per-token FFN expansion ratio `k`. |
 | `token_grouping` | `sequential` | `sequential` or `semantic`. |
 | `feature_groups` | null | Semantic groups. Every feature is used exactly once. |
-| `gate_type` | `softmax` | `softmax` or `sigmoid` (L1-normalized). |
+| `gate_type` | `softmax` | `softmax`, `sigmoid` (L1-normalized), or `mean`. |
+| `task_pooling` | `gate` | `gate` keeps a per-task token gate. `mean` shares one mean-pool across towers. `gate_type: mean` selects the same ablation. |
 | `tower_hidden_units` | [64] | Hidden units of each task tower. |
 | `use_sparse_moe` | false | Sparse-MoE per-token FFNs in the shared trunk. |
 | `moe_lambda` | 1e-3 | L1 penalty on the ReLU gates. |
@@ -43,6 +44,7 @@ CPU smoke tests:
 cd model_zoo/multitask/MT_RankMixer
 python run_expid.py --expid MTRankMixer_test --gpu -1
 python run_expid.py --expid MTRankMixer_group_test --gpu -1
+python run_expid.py --expid MTRankMixer_mean_test --gpu -1
 ```
 
 `MTRankMixer_group_test` uses semantic groups (all categorical fields in one token, all numerical fields in the other) and `gate_type: sigmoid`.

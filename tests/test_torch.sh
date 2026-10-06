@@ -63,5 +63,6 @@ echo "=== Testing MMoE ===" && cd $home/multitask/MMoE && python run_expid.py --
 echo "=== Testing PLE ===" && cd $home/multitask/PLE && python run_expid.py --expid PLE_test && \
 echo "=== Testing MTRankMixer ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_test --gpu -1 && \
 echo "=== Testing MTRankMixer semantic groups ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_group_test --gpu -1 && \
+echo "=== Testing MTRankMixer shared mean pool ===" && cd $home/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_mean_test --gpu -1 && \
 
 echo "All tests done."

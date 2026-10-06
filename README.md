@@ -1,3 +1,59 @@
+# 本 Fork 的贡献：RankMixer + MT-RankMixer
+
+这是我在 FuxiCTR 上做的多任务排序工作。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现；我自己的部分是 **MT-RankMixer**：CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
+
+*This fork reproduces RankMixer and adds MT-RankMixer. The original piece is per-task token gating over semantic tokens, not a line-by-line port of the paper.*
+
+**创新点**
+
+1. **任务感知的 token 门控**，替代论文里所有任务共享的 mean-pooling。
+2. **语义 token 化**（用户 / 商品 / 上下文），让门控有可解释的对象；顺序切块是对照。
+3. **共享池化消融**（`task_pooling: mean`）和 **门控权重分析**。消融配置和多种子脚本已经写好，这一轮 GPU 数字还没出。
+
+**1 epoch、单种子、RTX 4090 上已经跑完的结果**（未调参；0.001 量级先不要当结论）
+
+Criteo_x1 test：
+
+| 模型 | Test AUC | Test logloss |
+| --- | ---: | ---: |
+| DCNv2 | 0.808973 | 0.442537 |
+| RankMixer | 0.808522 | 0.443048 |
+| DNN | 0.807165 | 0.444495 |
+| WuKong | 0.806889 | 0.444488 |
+
+Ali-CCP test（PaddleRec 公开镜像，不是天池原版）：
+
+| 模型 | click AUC | conv AUC | 平均 AUC |
+| --- | ---: | ---: | ---: |
+| MT-RankMixer semantic | 0.619737 | 0.640612 | 0.630174 |
+| PLE | 0.621780 | 0.624989 | 0.623385 |
+| MT-RankMixer sequential | 0.617890 | 0.627733 | 0.622811 |
+
+语义分组的转化 AUC 比 PLE 高约 0.016，平均 AUC 也最高；点击略低约 0.002。顺序切块明显弱于语义分组。设计取舍、局限和下一轮多种子实验见 [docs/RankMixer_tech_report.md](docs/RankMixer_tech_report.md)。
+
+```mermaid
+flowchart LR
+  U[用户 token] --> Mix[Token Mixing H=T]
+  I[商品 token] --> Mix
+  C[上下文 token] --> Mix
+  Mix --> FFN[Per-token FFN 加残差]
+  FFN --> G1[CTR 门控]
+  FFN --> G2[CVR 门控]
+  G1 --> T1[CTR tower]
+  G2 --> T2[CVR tower]
+```
+
+```bash
+cd model_zoo/RankMixer && python run_expid.py --expid RankMixer_test --gpu -1
+cd model_zoo/multitask/MT_RankMixer && python run_expid.py --expid MTRankMixer_test --gpu -1
+bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
+bash benchmarks/rankmixer/run_multiseed.sh 0
+```
+
+---
+
+以下为上游 FuxiCTR 原始 README。
+
 <div align="center">
 <img src="https://cdn.jsdelivr.net/gh/reczoo/FuxiCTR@main/docs/img/logo.png" alt="Logo" width="260"/>
 </div>

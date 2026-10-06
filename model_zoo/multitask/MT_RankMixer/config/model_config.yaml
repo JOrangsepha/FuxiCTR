@@ -96,6 +96,43 @@ MTRankMixer_group_test:
     monitor_mode: 'max'
     num_workers: 0
 
+### CPU smoke for the shared mean-pool ablation. Same trunk as MTRankMixer_test.
+MTRankMixer_mean_test:
+    model: MTRankMixer
+    dataset_id: tiny_mtl
+    loss: ['binary_crossentropy', 'binary_crossentropy']
+    metrics: ['logloss', 'AUC']
+    task: ['binary_classification', 'binary_classification']
+    num_tasks: 2
+    loss_weight: EQ
+    optimizer: adam
+    learning_rate: 1.0e-3
+    embedding_regularizer: 0
+    net_regularizer: 0
+    batch_size: 32
+    embedding_dim: 8
+    num_tokens: 4
+    token_dim: 32
+    num_layers: 1
+    ffn_multiplier: 2
+    token_grouping: sequential
+    feature_groups: null
+    gate_type: mean
+    task_pooling: mean
+    tower_hidden_units: [32]
+    tower_hidden_activations: relu
+    tower_batch_norm: false
+    use_sparse_moe: false
+    num_experts: 2
+    moe_lambda: 1.0e-3
+    net_dropout: 0
+    epochs: 1
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'
+    num_workers: 0
+
 ### 1-epoch Ali-CCP setting for the GPU comparison against MMoE / PLE / ShareBottom.
 MTRankMixer_aliccp:
     model: MTRankMixer

@@ -318,6 +318,106 @@ class TestModels(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(loss).item())
 
+    def _mt_model(self, **overrides):
+        feature_map = make_feature_map(["click", "conversion"], TOY_FEATURES)
+        kwargs = dict(feature_map=feature_map,
+                      model_root="/tmp/mt_rankmixer_unit",
+                      metrics=["AUC"],
+                      verbose=0,
+                      optimizer="adam",
+                      loss=["binary_crossentropy", "binary_crossentropy"],
+                      task=["binary_classification", "binary_classification"],
+                      num_tasks=2,
+                      learning_rate=1e-3,
+                      gpu=-1,
+                      embedding_dim=4,
+                      num_tokens=2,
+                      token_dim=8,
+                      num_layers=1,
+                      ffn_multiplier=2,
+                      token_grouping="semantic",
+                      feature_groups=["user", "item"],
+                      tower_hidden_units=[4])
+        kwargs.update(overrides)
+        return MTRankMixer(**kwargs)
+
+    def test_shared_mean_pooling_drops_the_gate_and_shares_the_vector(self):
+        for overrides in ({"task_pooling": "mean"}, {"gate_type": "mean"}):
+            model = self._mt_model(**overrides)
+            self.assertEqual(model.task_pooling, "mean")
+            self.assertIsNone(model.task_gate)
+            tokens = torch.randn(3, 2, 8)
+            mixed, gates = model.mix_tokens(tokens)
+            self.assertIsNone(gates)
+            expected = tokens.mean(dim=1)
+            self.assertTrue(torch.allclose(mixed[0], expected))
+            self.assertTrue(torch.allclose(mixed[1], expected))
+            self.assertEqual(mixed[0].data_ptr(), mixed[1].data_ptr())
+            out = model(self._batch())
+            self.assertEqual(tuple(out["click_pred"].shape), (3, 1))
+            self.assertEqual(tuple(out["conversion_pred"].shape), (3, 1))
+            y = [torch.zeros(3, 1), torch.ones(3, 1)]
+            loss = model.compute_loss(out, y)
+            loss.backward()
+            self.assertTrue(torch.isfinite(loss).item())
+
+    def test_mean_pooling_removes_only_the_gate_parameters(self):
+        gated = self._mt_model(gate_type="softmax", task_pooling="gate")
+        shared = self._mt_model(task_pooling="mean", gate_type="softmax")
+        n_gated = sum(p.numel() for p in gated.parameters())
+        n_shared = sum(p.numel() for p in shared.parameters())
+        # Two Linear(token_dim, 1) scorers, weight plus bias.
+        self.assertEqual(n_gated - n_shared, 2 * (8 + 1))
+
+    def test_task_pooling_rejects_unknown_values(self):
+        with self.assertRaises(ValueError):
+            self._mt_model(task_pooling="attn")
+        with self.assertRaises(ValueError):
+            self._mt_model(gate_type="relu")
+
+    def test_gate_summary_slices_and_log_parser(self):
+        import importlib.util
+        import numpy as np
+
+        def load(module_name, relative):
+            path = os.path.join(REPO_ROOT, relative)
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+        gates = load("analyze_gates", "benchmarks/rankmixer/analyze_gates.py")
+        summary = load("summarize_multiseed", "benchmarks/rankmixer/summarize_multiseed.py")
+        weights = np.array([
+            [[0.5, 0.3, 0.2], [0.2, 0.2, 0.6]],
+            [[0.1, 0.2, 0.7], [0.4, 0.4, 0.2]],
+        ])
+        rows = gates.summarize_gates(
+            weights, np.array([1.0, 0.0]), np.array([0.0, 1.0]),
+            ["user", "item", "context"], ["click", "conversion"])
+        by_key = {(row["slice"], row["task"]): row for row in rows}
+        self.assertAlmostEqual(by_key[("all", "click")]["user"]["mean"], 0.3)
+        self.assertAlmostEqual(by_key[("click=1", "click")]["user"]["mean"], 0.5)
+        self.assertIsNone(by_key[("click=1", "click")]["user"]["std"])
+        self.assertEqual(by_key[("conversion=1", "conversion")]["n"], 1)
+        self.assertAlmostEqual(by_key[("conversion=1", "conversion")]["context"]["mean"], 0.2)
+        text = gates.render_markdown(rows, ["user", "item", "context"])
+        self.assertIn("click=1", text)
+
+        log = """
+Evaluation @epoch 1 - batch 4:
+Save best model: monitor(max)=0.610000
+Evaluation @epoch 2 - batch 4:
+Monitor(max)=0.600000 STOP!
+******** Test evaluation ********
+[Task: click][Metrics] logloss: 0.160000 - AUC: 0.620000
+[Task: conversion][Metrics] logloss: 0.002000 - AUC: 0.640000
+"""
+        best_epoch, metrics = summary.parse_log(log)
+        self.assertEqual(best_epoch, "1")
+        self.assertAlmostEqual(metrics["click_auc"], 0.62)
+        self.assertAlmostEqual(metrics["conversion_auc"], 0.64)
+
 
 if __name__ == "__main__":
     unittest.main()

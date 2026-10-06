@@ -112,3 +112,24 @@ AliCCP_x1 test (~38M train rows, `min_categr_count=10`), from the PaddleRec mirr
 | MMoE | 0.619928 | 0.618001 | 0.002148 | 0.618964 | 78 s |
 
 Semantic grouping has the best conversion AUC (about +0.016 over PLE) and the highest mean AUC. Click AUC is about 0.002 below PLE. Sequential is clearly weaker than semantic on mean AUC, so the semantic token split is the part that moves the multi-task result. These are 1-epoch, single-seed, untuned numbers. Ali-CCP conversion positives are rare, so gaps around 0.001 can be noise. Re-check with multiple seeds, more epochs, and early stopping.
+
+## 6. Multi-seed early stopping (prepared, not yet run)
+
+`run_multiseed.sh` trains three models on the existing Ali-CCP parquet cache (it does not rebuild `feature_map.json`):
+
+| Template expid | What it is |
+| --- | --- |
+| `MTRankMixer_aliccp_semantic_es` | Semantic tokens, per-task softmax gate |
+| `MTRankMixer_aliccp_semantic_mean_es` | Same trunk, `task_pooling: mean` |
+| `PLE_aliccp_es` | PLE baseline |
+
+Seeds 2025, 2026, 2027. Cap 6 epochs, `early_stop_patience: 1`. `monitor: AUC` is the unweighted mean of click AUC and conversion AUC, because `MultiTaskModel.evaluate` writes that mean back under the bare key `AUC`. Each job has its own log and a `timeout` (default 4 hours). The script writes `benchmarks/rankmixer/multiseed_summary.csv`. `multiseed_stats.py` prints mean ± sample standard deviation.
+
+```bash
+bash benchmarks/rankmixer/run_multiseed.sh 0
+python benchmarks/rankmixer/analyze_gates.py --gpu 0 \
+  --checkpoint model_zoo/multitask/MT_RankMixer/checkpoints/AliCCP_x1/MTRankMixer_aliccp_semantic_es_s2025.model \
+  --config benchmarks/rankmixer/configs/multiseed \
+  --expid MTRankMixer_aliccp_semantic_es \
+  --max_samples 500000
+```
