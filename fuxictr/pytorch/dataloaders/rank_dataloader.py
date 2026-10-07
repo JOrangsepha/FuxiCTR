@@ -33,8 +33,9 @@ def RankDataLoader(feature_map, stage="both", train_data=None, valid_data=None, 
 
     Args:
         feature_map (FeatureMap): Feature map that defines columns and labels.
-        stage (str, optional): Stage to load, one of ``"both"``, ``"train"``, or ``"test"``.
-            Default: ``"both"``.
+        stage (str, optional): Stage to load, one of ``"both"``, ``"train"``,
+            ``"valid"``, or ``"test"``. ``"valid"`` returns only the validation
+            generator and does not open the test split. Default: ``"both"``.
         train_data (str, optional): Path to training data. Default: ``None``.
         valid_data (str, optional): Path to validation data. Default: ``None``.
         test_data (str, optional): Path to test data. Default: ``None``.
@@ -46,6 +47,7 @@ def RankDataLoader(feature_map, stage="both", train_data=None, valid_data=None, 
     Returns:
         tuple or DataLoader: Depending on ``stage``:
             - ``"train"``: ``(train_gen, valid_gen)``
+            - ``"valid"``: ``valid_gen``
             - ``"test"``: ``test_gen``
             - ``"both"``: ``(train_gen, valid_gen, test_gen)``
     """
@@ -66,6 +68,17 @@ def RankDataLoader(feature_map, stage="both", train_data=None, valid_data=None, 
             DataLoader = ParquetDataLoader
         else:
             raise ValueError(f"data_format={data_format} not supported.")
+    if stage == "valid":
+        if not valid_data:
+            raise ValueError("valid_data is required when stage='valid'.")
+        valid_gen = DataLoader(feature_map, valid_data, split="valid",
+                               batch_size=batch_size, shuffle=False, **kwargs)
+        logging.info(
+            "Validation samples: total/{:d}, blocks/{:d}"
+            .format(valid_gen.num_samples, valid_gen.num_blocks)
+        )
+        logging.info("Loading validation data done.")
+        return valid_gen
     if stage in ["both", "train"]:
         train_gen = DataLoader(feature_map, train_data, split="train", batch_size=batch_size,
                                shuffle=shuffle, **kwargs)

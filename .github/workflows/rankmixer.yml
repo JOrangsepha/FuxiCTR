@@ -1,0 +1,38 @@
+name: rankmixer
+
+on:
+  push:
+    paths:
+      - "fuxictr/pytorch/layers/interactions/rankmixer.py"
+      - "fuxictr/pytorch/models/multitask_model.py"
+      - "fuxictr/pytorch/dataloaders/rank_dataloader.py"
+      - "model_zoo/RankMixer/**"
+      - "model_zoo/multitask/MT_RankMixer/**"
+      - "benchmarks/rankmixer/**"
+      - "tests/unit_tests/models/test_rankmixer.py"
+      - ".github/workflows/rankmixer.yml"
+  pull_request:
+    paths:
+      - "fuxictr/pytorch/layers/interactions/rankmixer.py"
+      - "fuxictr/pytorch/models/multitask_model.py"
+      - "fuxictr/pytorch/dataloaders/rank_dataloader.py"
+      - "model_zoo/RankMixer/**"
+      - "model_zoo/multitask/MT_RankMixer/**"
+      - "benchmarks/rankmixer/**"
+      - "tests/unit_tests/models/test_rankmixer.py"
+      - ".github/workflows/rankmixer.yml"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install CPU torch and test imports
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy pyyaml scikit-learn polars pandas tqdm pyarrow h5py pydantic "ray[data]>=2.52.0"
+      - name: RankMixer unit tests
+        run: python -m unittest tests.unit_tests.models.test_rankmixer

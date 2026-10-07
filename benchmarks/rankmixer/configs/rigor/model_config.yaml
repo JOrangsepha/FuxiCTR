@@ -1,0 +1,175 @@
+# Rigor suite on AliCCP_x1. run_rigor_suite.sh clones each expid once per seed.
+#
+# Protocol: the driver passes --skip_test. Early stopping watches validation.
+# Gate analysis uses --stage valid. Do not read test until run_final_test.sh,
+# and only after the design is frozen.
+#
+# Budget: batch 8192, embedding 16, Adam 1e-3, epochs <= 10,
+# early_stop_patience 3 (Base). This is a sensitivity check against the
+# development-study patience of 1 and epoch cap of 6. loss_weight stays EQ.
+#
+# g6_random partition seed is 42, independent of the training seed.
+# Fisher-Yates uses random.Random(42).random() only. The groups are fixed
+# below; training does not shuffle them again. See field_groups.py.
+# g6_sequential is contiguous chunks of the 18-field list, 3 fields each.
+# Both controls use shared mean pooling, same T/D/L/k as g6_mean.
+# Semantic groups are unequal (1, 8, 1, 3, 4, 1), so their tokenizer
+# projections are wider or narrower than the equal-size controls.
+#
+# Six semantic tokens, in order:
+#   0 user id                 101
+#   1 user profile            121,122,124,125,126,127,128,129
+#   2 item id                 205
+#   3 item cat/shop/brand     206,207,216
+#   4 cross features          508,509,702,853
+#   5 scenario                301
+
+Base:
+    model_root: /root/autodl-tmp/rg_out/checkpoints
+    num_workers: 4
+    verbose: 1
+    early_stop_patience: 3
+    pickle_feature_encoder: True
+    save_best_only: True
+    eval_steps: null
+    debug_mode: False
+    group_id: null
+    use_features: null
+    feature_specs: null
+    feature_config: null
+
+x-groups-g3: &groups_g3
+    - ["101", "121", "122", "124", "125", "126", "127", "128", "129"]
+    - ["205", "206", "207", "216"]
+    - ["508", "509", "702", "853", "301"]
+
+x-groups-g6: &groups_g6
+    - ["101"]
+    - ["121", "122", "124", "125", "126", "127", "128", "129"]
+    - ["205"]
+    - ["206", "207", "216"]
+    - ["508", "509", "702", "853"]
+    - ["301"]
+
+x-groups-g6-sequential: &groups_g6_sequential
+    - ["101", "121", "122"]
+    - ["124", "125", "126"]
+    - ["127", "128", "129"]
+    - ["205", "206", "207"]
+    - ["216", "508", "509"]
+    - ["702", "853", "301"]
+
+# random.Random(42), Fisher-Yates via random(), then chunks of 3.
+# Order after the shuffle:
+# 127,205,128, 122,126,216, 509,121,301, 702,853,508, 129,206,124, 125,101,207
+x-groups-g6-random: &groups_g6_random
+    - ["127", "205", "128"]
+    - ["122", "126", "216"]
+    - ["509", "121", "301"]
+    - ["702", "853", "508"]
+    - ["129", "206", "124"]
+    - ["125", "101", "207"]
+
+x-mt: &mt
+    model: MTRankMixer
+    dataset_id: AliCCP_x1
+    loss: ['binary_crossentropy', 'binary_crossentropy']
+    metrics: ['logloss', 'AUC']
+    task: ['binary_classification', 'binary_classification']
+    num_tasks: 2
+    loss_weight: EQ
+    optimizer: adam
+    learning_rate: 1.0e-3
+    embedding_regularizer: 0
+    net_regularizer: 0
+    batch_size: 8192
+    embedding_dim: 16
+    token_dim: 48
+    num_layers: 2
+    ffn_multiplier: 2
+    token_grouping: semantic
+    gate_entropy_reg: 0
+    gate_temperature: 1.0
+    tower_hidden_units: [64]
+    tower_hidden_activations: relu
+    tower_batch_norm: false
+    use_sparse_moe: false
+    num_experts: 4
+    moe_lambda: 1.0e-3
+    net_dropout: 0
+    epochs: 10
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'
+
+MTR_rg_g3_mean:
+    <<: *mt
+    num_tokens: 3
+    feature_groups: *groups_g3
+    gate_type: mean
+    task_pooling: mean
+
+MTR_rg_g6_mean:
+    <<: *mt
+    num_tokens: 6
+    feature_groups: *groups_g6
+    gate_type: mean
+    task_pooling: mean
+
+MTR_rg_g6_residual:
+    <<: *mt
+    num_tokens: 6
+    feature_groups: *groups_g6
+    gate_type: softmax
+    task_pooling: residual
+
+MTR_rg_g6_gate:
+    <<: *mt
+    num_tokens: 6
+    feature_groups: *groups_g6
+    gate_type: softmax
+    task_pooling: gate
+
+MTR_rg_g6_random:
+    <<: *mt
+    num_tokens: 6
+    feature_groups: *groups_g6_random
+    gate_type: mean
+    task_pooling: mean
+
+MTR_rg_g6_sequential:
+    <<: *mt
+    num_tokens: 6
+    feature_groups: *groups_g6_sequential
+    gate_type: mean
+    task_pooling: mean
+
+PLE_rg:
+    model: PLE
+    dataset_id: AliCCP_x1
+    loss: ['binary_crossentropy', 'binary_crossentropy']
+    metrics: ['logloss', 'AUC']
+    task: ['binary_classification', 'binary_classification']
+    num_tasks: 2
+    loss_weight: EQ
+    optimizer: adam
+    learning_rate: 1.0e-3
+    num_layers: 1
+    num_shared_experts: 2
+    num_specific_experts: 2
+    expert_hidden_units: [128, 64]
+    gate_hidden_units: [64]
+    tower_hidden_units: [64]
+    hidden_activations: relu
+    net_regularizer: 0
+    embedding_regularizer: 0
+    batch_norm: False
+    net_dropout: 0
+    batch_size: 8192
+    embedding_dim: 16
+    epochs: 10
+    shuffle: True
+    seed: 2025
+    monitor: 'AUC'
+    monitor_mode: 'max'

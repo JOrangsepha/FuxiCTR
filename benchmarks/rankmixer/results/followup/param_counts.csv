@@ -1,0 +1,14 @@
+label,expid,model,total,embedding,non_embedding,model_loss_weight,embedding_dim,learning_rate,batch_size,optimizer,embedding_regularizer,net_regularizer,net_dropout,epochs,early_stop_patience,loss_weight
+MTR_rg_g3_mean,MTR_rg_g3_mean_s2025,MTRankMixer,20478850,20401936,76914,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+MTR_rg_g6_mean,MTR_rg_g6_mean_s2025,MTRankMixer,20535154,20401936,133218,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+MTR_rg_g6_residual,MTR_rg_g6_residual_s2025,MTRankMixer,20535254,20401936,133318,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+MTR_rg_g6_gate,MTR_rg_g6_gate_s2025,MTRankMixer,20535252,20401936,133316,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+MTR_rg_g6_random,MTR_rg_g6_random_s2025,MTRankMixer,20535154,20401936,133218,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+MTR_rg_g6_sequential,MTR_rg_g6_sequential_s2025,MTRankMixer,20535154,20401936,133218,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+PLE_rg,PLE_rg_s2025,PLE,20738012,20401936,336076,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+MTR_fu_g6_mean_w10,MTR_fu_g6_mean_w10_s2025,MTRankMixer,20535154,20401936,133218,[1.0; 10.0],16,0.001,8192,adam,0,0,0,10,3,[1.0; 10.0]
+MTR_fu_g6_gate_w10,MTR_fu_g6_gate_w10_s2025,MTRankMixer,20535252,20401936,133316,[1.0; 10.0],16,0.001,8192,adam,0,0,0,10,3,[1.0; 10.0]
+MTR_fu_g6_residual_w10,MTR_fu_g6_residual_w10_s2025,MTRankMixer,20535254,20401936,133318,[1.0; 10.0],16,0.001,8192,adam,0,0,0,10,3,[1.0; 10.0]
+PLE_fu_wide,PLE_fu_wide_s2025,PLE,21115996,20401936,714060,EQ,16,0.001,8192,adam,0,0,0,10,3,EQ
+PLE_fu_lr5e4,PLE_fu_lr5e4_s2025,PLE,20738012,20401936,336076,EQ,16,0.0005,8192,adam,0,0,0,10,3,EQ
+PLE_fu_drop01,PLE_fu_drop01_s2025,PLE,20738012,20401936,336076,EQ,16,0.001,8192,adam,0,0,0.1,10,3,EQ

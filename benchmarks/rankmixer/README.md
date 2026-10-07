@@ -2,10 +2,12 @@
 
 Modest 1-epoch comparison, meant to fit in a few GPU-hours on one rented GPU. It is a public-data check of this implementation, not a reproduction of the paper's trillion-scale Douyin experiments.
 
+Ali-CCP tables in sections 5–7 are a test-contaminated development study. The validation-first 5-seed run (2026-10-07, seeds 2025–2029, test unread) is section 8 and `results/rigor/`. That study supersedes sections 5–7 for claims about tokenization, gating, and residual pooling. Conversion there is impression-level joint conversion.
+
 | Track | Models | Data |
 | --- | --- | --- |
 | Single-task | RankMixer, DCNv2, WuKong, DNN | [Criteo_x1](https://huggingface.co/datasets/reczoo/Criteo_x1) (BARS split, ~33.0M train rows) |
-| Multi-task | MT-RankMixer, MMoE, PLE, ShareBottom | Ali-CCP click + conversion |
+| Multi-task | MT-RankMixer, MMoE, PLE, ShareBottom | Ali-CCP click + impression-level conversion |
 
 Shared settings: Adam, learning rate `1e-3`, embedding size 16, batch 8192, 1 epoch, seed 2025, no extra L2. RankMixer uses `T=8`, `D=64`, `L=2`, `k=2`. The paper's 100M model is `D=768`, `T=16`, `L=2`; do not compare these AUC numbers to Table 1 of the paper.
 
@@ -27,11 +29,11 @@ The first FuxiCTR launch also builds `feature_map.json` and the parquet cache un
 
 The existing multi-task configs in this repo only reference `tiny_mtl`. Ali-CCP is the public click/conversion set used for this comparison. The recorded run in section 5 used the PaddleRec public mirror, [https://paddlerec.bj.bcebos.com/datasets/aitm/](https://paddlerec.bj.bcebos.com/datasets/aitm/), which does not require Tianchi student verification. The steps below are an alternative path from Tianchi dataset 408.
 
-1. Download `sample_skeleton_{train,test}.csv` and `common_features_{train,test}.csv` from https://tianchi.aliyun.com/dataset/408 (login required). There is no official validation split.
+1. Download `sample_skeleton_{train,test}.csv` and `common_features_{train,test}.csv` from https://tianchi.aliyun.com/dataset/408 (login required). There is no official validation split. The official test file stays the test split.
 2. Join skeleton rows with common features and keep the 18 categorical ids used by the AITM / Torch-RecHub preprocessing:
    `101, 121, 122, 124, 125, 126, 127, 128, 129, 205, 206, 207, 216, 508, 509, 702, 853, 301`.
    A readable reference script is https://github.com/xidongbo/AITM/blob/main/process_public_dataset.py (it names the second label `purchase`; rename that column to `conversion`).
-3. Hold out 10% of the training rows, in order, as `valid.csv`. Write:
+3. The recorded Ali-CCP cache follows that AITM script, not a sequential prefix. `process_public_dataset.py` sets `random.seed(2020)` and writes a processed training row to dev when `random.random() >= 0.9`, so validation is a random ~10% holdout with that fixed seed. The PaddleRec public mirror used for the tables below is the same kind of split. Write:
 
 ```text
 data/AliCCP/AliCCP_x1/train.csv
@@ -88,7 +90,7 @@ First-time csv preprocessing (vocabulary + parquet cache) can add another 30-90 
 
 ## 5. Recorded run (RTX 4090, 2026-10-05)
 
-One full pipeline on 1 × NVIDIA GeForce RTX 4090 (AutoDL), commit `5bbf507`, no local code changes. Shared settings: 1 epoch, batch 8192, embedding size 16, Adam `lr=1e-3`, seed 2025, no L2, no dropout, AUC monitor, single seed, no tuning. Wall clock 12:15:54–12:57:40 CST (2505 s, about 41.8 min) for 9 tasks, all exit 0. Epoch time below is training only. The Criteo table below is still this 1-epoch, single-seed run. The Ali-CCP table is a preliminary single-seed result and has been superseded by the 3-seed numbers in section 6. Full write-up: `docs/RankMixer_tech_report.md`.
+One full pipeline on 1 × NVIDIA GeForce RTX 4090 (AutoDL), commit `5bbf507`, no local code changes. Shared settings: 1 epoch, batch 8192, embedding size 16, Adam `lr=1e-3`, seed 2025, no L2, no dropout, AUC monitor, single seed, no tuning. Wall clock 12:15:54–12:57:40 CST (2505 s, about 41.8 min) for 9 tasks, all exit 0. Epoch time below is training only. The Criteo table below is still this 1-epoch, single-seed run. The Ali-CCP table is a preliminary single-seed result. The 3-seed numbers in section 6 superseded it inside the development study, and section 8 supersedes both for Ali-CCP claims. Full write-up: `docs/RankMixer_tech_report.md`.
 
 Criteo_x1 test (BARS split, ~33M train rows). RankMixer is sequential, `T=8`, `D=64`, `L=2`, `k=2`, dense FFN.
 
@@ -138,7 +140,7 @@ bash benchmarks/rankmixer/run_multiseed.sh 0
 bash benchmarks/rankmixer/run_anticollapse.sh 0
 ```
 
-`run_anticollapse.sh` writes under `/root/autodl-tmp/ac_out/` and then analyzes both seed-2025 checkpoints (500k rows). `anticollapse_summary.csv` marks the two analysis logs as failed because the summarizer only parses training logs; the markdown and png analyses themselves succeeded.
+`run_anticollapse.sh` writes under `/root/autodl-tmp/ac_out/` and then analyzes both seed-2025 checkpoints on the test split (500k rows), which is the development-study protocol. The archived `anticollapse_summary.csv` still marks the two analysis logs as failed. That was a summarizer bug: it treated `gate_*.log` as training runs. `summarize_multiseed.py` now skips `gate_` / `analyze_` / `grad_` logs and only parses `run_expid` training logs. The archived CSV was not rewritten.
 
 ## 7. Finer tokens and a 21-run sweep (recorded)
 
@@ -166,8 +168,58 @@ Test mean AUC:
 | res_ent0001 | 0.63132 ± 0.00068 | 0.62488 ± 0.00044 |
 | PLE | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
 
-Moving shared mean from 3 tokens to 6 tokens is +0.00191 mean AUC and about +0.0031 conversion AUC, on the order of one standard deviation: suggestive, not conclusive. `g6_residual` is +0.00037 over `g6_mean` (a tie) and +0.00424 over PLE. On the seed-2025 checkpoint, `g6_gate` conversion collapses onto item id (0.966156). `g6_residual` does not: click leans on user id (0.592475), conversion on user profile (0.567906), λ 0.510613 / 0.496720. Entropy 0.001 and 0.003 flatten the 3-token gates; temperature 2 leaves them peaked (entropy 0.894404 / 0.843908) and does not raise AUC. Tables and figures: `benchmarks/rankmixer/results/sweep_results.md`, `docs/img/rankmixer/gate_g6_gate_s2025.png`, `docs/img/rankmixer/gate_g6_residual_s2025.png`.
+On this test-contaminated development study, moving shared mean from 3 tokens to 6 tokens is +0.00191 mean AUC and about +0.0031 conversion AUC, on the order of one standard deviation. That reading did not replicate under the validation-first protocol in section 8 (g6_mean − g3_mean mean AUC +0.00072, p=0.692; the random 6-way split scores at least as high as the semantic split). `g6_residual` is +0.00037 over `g6_mean` on this test table (a tie) and +0.00424 over PLE. On the seed-2025 checkpoint, `g6_gate` conversion collapses onto item id (0.966156). `g6_residual` does not: click leans on user id (0.592475), conversion on user profile (0.567906), λ 0.510613 / 0.496720. Entropy 0.001 and 0.003 flatten the 3-token gates; temperature 2 leaves them peaked (entropy 0.894404 / 0.843908) and does not raise AUC. Tables and figures: `benchmarks/rankmixer/results/sweep_results.md`, `docs/img/rankmixer/gate_g6_gate_s2025.png`, `docs/img/rankmixer/gate_g6_residual_s2025.png`.
 
 ```bash
 bash benchmarks/rankmixer/run_sweep.sh 0
+```
+
+## 8. Rigor suite (validation first; recorded 2026-10-07)
+
+Sections 5–7 used the test split for diagnosis and for choosing what to write up. This section does not. The suite ran on AutoDL with `run_rigor_suite.sh`, `SEEDS=2025 2026 2027 2028 2029`, `PARALLEL=2`. All 35 runs exited 0. Training passed `--skip_test`. Gate analysis used validation. The test parquet was not read.
+
+Headline models, existing Ali-CCP parquet: `g3_mean`, `g6_mean`, `g6_residual`, `g6_gate`, `g6_random`, `g6_sequential`, PLE. Budget: batch 8192, embedding 16, Adam `1e-3`, epochs ≤ 10, `early_stop_patience: 3`, EQ loss. `g6_random` and `g6_sequential` are shared-mean controls at T=6. The random partition seed is 42 (Fisher-Yates via `random.Random.random`, then chunks of 3). The sequential groups are contiguous chunks of the 18-field list. Semantic groups have sizes 1, 8, 1, 3, 4, 1, so their projection widths differ from the equal groups of 3.
+
+Validation mean ± sample std (n=5), sorted by mean AUC. Click and conversion are both impression-level. Full per-run rows, paired tests, gate tables, λ, and the gradient audit: `results/rigor/`.
+
+| variant | click AUC | impression-level conversion AUC | mean AUC |
+| --- | --- | --- | ---: |
+| g6_gate | 0.61886 ± 0.00142 | 0.64139 ± 0.00589 | 0.63013 ± 0.00346 |
+| g6_random | 0.61936 ± 0.00224 | 0.63956 ± 0.00502 | 0.62946 ± 0.00303 |
+| g6_residual | 0.62009 ± 0.00126 | 0.63829 ± 0.00393 | 0.62919 ± 0.00228 |
+| g6_mean | 0.61960 ± 0.00149 | 0.63589 ± 0.00568 | 0.62775 ± 0.00348 |
+| g3_mean | 0.61790 ± 0.00114 | 0.63615 ± 0.00237 | 0.62702 ± 0.00154 |
+| g6_sequential | 0.61991 ± 0.00225 | 0.63352 ± 0.00503 | 0.62672 ± 0.00211 |
+| PLE | 0.61823 ± 0.00274 | 0.63136 ± 0.00651 | 0.62480 ± 0.00441 |
+
+No mean-AUC paired comparison reaches p<0.1 (df=4). The smallest is g6_gate − PLE, +0.00533 ± 0.00653, 5/5, t=+1.83, p=0.142. Three single-metric rows are below 0.1: g6_sequential − g3_mean click p=0.080; g6_gate − PLE conversion p=0.077; g3_mean − PLE conversion p=0.095. The archived `rigor_results.md` says no comparison reaches p<0.1; that sentence disagrees with its table. The table is the record. g6_mean − g3_mean mean AUC is +0.00072 ± 0.00379 (3/5, p=0.692). g6_mean − g6_random is −0.00171 ± 0.00502 (2/5, p=0.488): the random 6-way split scores at least as high as the semantic split. The development-study “finer semantic tokens are the main gain” reading did not replicate.
+
+`g6_gate` conversion puts weight 0.96–0.99 on one token in every seed (entropy 0.121305 ± 0.050015). The token changes with the seed: item_id (2025, 0.976), item_attr (2026, 0.982), user_profile (2027, 0.961), item_attr (2028, 0.984), user_profile (2029, 0.991). Residual pooling raises conversion-gate entropy to 0.699623 ± 0.467691; seeds 2027 and 2029 still exceed 0.9 on user_profile (0.920 and 0.988). Learnable λ stays near its 0.5 init: click 0.506983 ± 0.003786, conversion 0.499401 ± 0.004778.
+
+Gradient audit, one `g6_mean` seed-2025 checkpoint, 4 validation batches, weights not updated: mean trunk L2 click 4.313689e-02, conversion 4.029779e-03, ratio 10.7045. Under EQ, click drives the trunk about 10.7× harder than conversion. 34 of 35 runs peak at epoch 1; PLE seed 2026 peaks at epoch 2 (mean AUC 0.61730, 916 s). Against this untuned PLE, RankMixer mean AUCs sit higher, and the paired mean-AUC p-values are 0.142 (g6_gate), 0.173 (g6_residual), 0.293 (g6_mean), 0.229 (g3_mean). Section 9 retunes PLE and withdraws that comparison.
+
+Seed-2025 validation figures (not a 5-seed mean): `docs/img/rankmixer/rigor_valid_g6_gate_s2025.png`, `docs/img/rankmixer/rigor_valid_g6_residual_s2025.png`. This suite itself did not read test. The one-time test is section 9.
+
+```bash
+# Already run (seeds 2025–2029, test unread). OUT defaults to /root/autodl-tmp/rg_out.
+SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
+```
+
+## 9. Follow-up and the one-time final test (recorded)
+
+`run_followup.sh` trains with `--skip_test`, selects the PLE config on validation seeds 2025–2027, evaluates clicked-only CVR, then reads test once on the pre-registered set in `results/followup/FROZEN_SET.txt` (55 checkpoints). A `FINAL_TEST_DONE` marker blocks a second read. `OUT` and `RG_OUT` set the output directories. Source of truth: `results/followup/followup_results.md`.
+
+Per-batch `NORM` was started and stopped. Two g6_mean runs, epoch-1 validation: train loss 1.843 and 1.842 (a nonzero-loss NORM objective is 2.0), impression-level conversion AUC 0.5007 and 0.5327, against EQ 0.6445 and 0.6356 on the same seeds. About 16–17% of 8192-row batches have no conversion, and `1/L` blows the conversion gradient up. The recorded loss-weight runs are constant `W[1,10]`. Validation paired mean AUC versus EQ: g6_mean −0.00013 ± 0.00366 (p=0.942), g6_gate +0.00041 ± 0.00647 (p=0.893), g6_residual +0.00098 ± 0.00189 (p=0.312). A 16-batch trunk audit gives EQ ratio 9.659 and `W[1,10]` effective ratio 1.026. Gradients balance. AUC does not move. `loss_weight: NORM_FLOOR` exists in code and was not run.
+
+PLE tuning used the same data, embedding 16, batch 8192, Adam, epochs ≤ 10, patience 3, and zero regularization. Non-embedding params: g6_mean 133218, PLE baseline 336076, PLE wide 714060, embedding 20401936 for all of them. Three single-change configs × seeds 2025–2027, plus the baseline. Selected config: `PLE_fu_lr5e4` (learning rate 5e-4; 3-seed mean AUC 0.62963 ± 0.00211). With seeds 2028–2029: validation mean AUC 0.62959 ± 0.00188. That ties the best MT-RankMixer rows. The section 8 “above PLE” statement is withdrawn.
+
+Clicked-only CVR AUC ranks `click=1` rows by the conversion head. `p_conv/p_click` ranks the same rows by the ratio. Validation, 836258 clicked rows and 4665 conversions in them: g6_gate EQ 0.62300 ± 0.00729 (ratio 0.67100 ± 0.00677); tuned PLE 0.61961 ± 0.00256 (ratio 0.67554 ± 0.00600). The full table is section 4 of the archived report.
+
+Final test, no selection. Pre-registered pairs, all n=5: g6_residual `W[1,10]` − EQ mean AUC +0.00129 ± 0.00111, 4/5, p=0.061; g6_mean EQ − tuned PLE mean AUC −0.00132 ± 0.00493, p=0.581, clicked-only CVR −0.01404 ± 0.01183, p=0.057; g6_mean − g3_mean EQ mean AUC +0.00228 ± 0.00408, p=0.279. Nothing in that pre-registered table has p<0.05. Tuned PLE test mean AUC is 0.62731 ± 0.00180; g6_gate `W[1,10]` is 0.62898 ± 0.00443. `followup_results.md` has no per-seed gate table for `W[1,10]`, so this file does not add token weights. The EQ collapse in section 8 remains the measured one.
+
+```bash
+# Recorded launch. Set NORM_SET to the w10 templates before phase A2.
+# echo "MTR_fu_g6_mean_w10 MTR_fu_g6_gate_w10 MTR_fu_g6_residual_w10" > "$OUT/NORM_SET"
+OUT=/root/autodl-tmp/fu_out RG_OUT=/root/autodl-tmp/rg_out \
+  bash benchmarks/rankmixer/run_followup.sh 0
 ```

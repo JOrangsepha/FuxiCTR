@@ -1,34 +1,80 @@
-# 本 Fork 的贡献：RankMixer + MT-RankMixer
+# 本 Fork 的贡献：一次诊断，不是一个打赢基线的模型
 
-这是我在 FuxiCTR 上做的多任务排序。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：任务门控、塌缩分析、残差池化，以及把语义 token 从 3 个拆到 6 个。
+这是我在 FuxiCTR 上做的诊断。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我加上的是 **MT-RankMixer**：每个任务自己的 token 门控，以及残差池化
 
-*This fork reproduces RankMixer and adds MT-RankMixer. The latest Ali-CCP gain comes from splitting 3 semantic tokens into 6. Residual gating does not beat mean pooling under the same split; it keeps the gates from collapsing.*
+\[
+h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t.
+\]
 
-**创新点**
+三个指标分开写。**click AUC** 是点击。**曝光级转化 AUC** 是整条曝光上的联合转化。**clicked-only CVR AUC** 只在 `click=1` 的行上、用转化头排序。`p_conv/p_click` 是同一批点击行上的另一种排序，不是曝光级转化。
 
-1. **Per-task token gating + 语义 token。** CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
-2. **门控塌缩的发现和可解释性分析。** 3 种子复核后，转化门控塌到商品 token（0.971）。拆成 6 个 token 之后，原门控的转化头再次塌到商品 ID（0.966）。
-3. **残差门控池化。** \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。6 token 上 λ 约 0.51 / 0.50，点击侧重用户 ID，转化侧重用户画像，门没有塌缩。
-4. **细粒度语义 tokenization 带来主要收益。** 3 token 共享 mean 到 6 token 共享 mean，test 平均 AUC 约 +0.0019，主要在转化 AUC。同一切分下残差只比 mean 高约 +0.0004。
+协议是：训练和选择只看验证集；test 在设计冻结之后读一次。验证集研究（35 次，exit 0）没有读 test。后续实验在同一批 checkpoint 上补了 PLE 调参、固定损失权重 `W[1,10]`、clicked-only CVR，然后对预注册的 55 个 checkpoint 读了一次 test（`FINAL_TEST_DONE` 挡住第二次）。全部任务 exit 0。原始表在 `benchmarks/rankmixer/results/followup/followup_results.md`。
 
-**Ali-CCP test 平均 AUC**（3 种子，均值 ± 样本标准差，early stopping；PaddleRec 公开镜像）
+**结论。** 把 PLE 的学习率在验证集上调到 5e-4 之后，它的 5 种子验证集平均 AUC 是 0.62959 ± 0.00188，和最好的 MT-RankMixer 变体打平。我先前写的「RankMixer 变体高于 PLE」针对的是没有调过的 PLE（验证集平均 AUC 0.62480 ± 0.00441），这句收回。门控和 `W[1,10]` 的增益小，预注册的 test 配对里没有一行 p<0.05（n=5）。转化门的塌缩在 EQ 上是稳的，塌到哪个 token 不稳。按 batch 做的 NORM 会把转化头推垮，我没有把它当成可用的训练损失。
 
-| 模型 | conv AUC | 平均 AUC |
-| --- | --- | ---: |
-| g6_residual（6 token） | 0.63468 ± 0.00680 | 0.62724 ± 0.00359 |
-| g6_mean（6 token） | 0.63473 ± 0.00327 | 0.62687 ± 0.00208 |
-| g6_gate（6 token） | 0.63442 ± 0.00177 | 0.62635 ± 0.00283 |
-| 共享 mean（3 token） | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
-| res_ent0001（3 token） | 0.63132 ± 0.00068 | 0.62488 ± 0.00044 |
-| 残差门控（3 token） | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
-| PLE | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
-| 原 per-task gating（3 token） | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
+值得留下来的是协议和证伪：验证集优先、冻结后只读一次 test、种子配对、T=6 的随机切分和顺序切分；语义 token 那句主要增益没有复现；基线 PLE 当时欠调；门控塌缩的诊断；NORM 的失败模式和梯度审计。
 
-6 token 相对 3 token 共享 mean 大约高 0.0019，约一个标准差，有迹象但不确定。`g6_residual` 相对同 tokenization 的 `g6_mean` 只高 +0.0004，打平。残差留下的是可解释的任务门：种子 2025 上点击偏用户 ID（0.59），转化偏用户画像（0.57）。
+*Fairly tuned PLE ties MT-RankMixer. Gating and loss reweighting do not separate from seed noise at n=5. Per-batch NORM collapses the conversion head.*
 
-![6 token 原门控：转化塌到商品 ID（0.966）。](docs/img/rankmixer/gate_g6_gate_s2025.png)
+**Ali-CCP 验证集，EQ，5 种子（2025–2029）。这张表里的 PLE 还没调学习率。**
 
-![6 token 残差门控：点击偏用户 ID，转化偏用户画像，λ 约 0.5。](docs/img/rankmixer/gate_g6_residual_s2025.png)
+| 变体 | click AUC | 曝光级转化 AUC | 平均 AUC |
+| --- | --- | --- | ---: |
+| g6_gate | 0.61886 ± 0.00142 | 0.64139 ± 0.00589 | 0.63013 ± 0.00346 |
+| g6_random | 0.61936 ± 0.00224 | 0.63956 ± 0.00502 | 0.62946 ± 0.00303 |
+| g6_residual | 0.62009 ± 0.00126 | 0.63829 ± 0.00393 | 0.62919 ± 0.00228 |
+| g6_mean | 0.61960 ± 0.00149 | 0.63589 ± 0.00568 | 0.62775 ± 0.00348 |
+| g3_mean | 0.61790 ± 0.00114 | 0.63615 ± 0.00237 | 0.62702 ± 0.00154 |
+| g6_sequential | 0.61991 ± 0.00225 | 0.63352 ± 0.00503 | 0.62672 ± 0.00211 |
+| PLE | 0.61823 ± 0.00274 | 0.63136 ± 0.00651 | 0.62480 ± 0.00441 |
+
+这张表里的 PLE 是后来发现欠调的基线。更细的语义切分没有复现成主要增益：g6_mean − g3_mean 的平均 AUC 是 +0.00072 ± 0.00379（p=0.692），随机 6 组 0.62946 ± 0.00303 不低于语义 6 组。开发期用 test 做选择的旧表只留在 [技术报告](docs/RankMixer_tech_report.md) 第 2–7 节。
+
+**PLE 是否公平。** 训练预算和 MT-RankMixer 对齐：同一份 Ali-CCP parquet，embedding 16，batch 8192，Adam，epoch 上限 10，patience 3，embedding/net 正则为 0。非嵌入参数：g6_mean 133218，g6_gate 133316，g6_residual 133318，PLE 基线 336076，加宽的 PLE 714060。嵌入参数都是 20401936。调参是 3 个单改动配置 × 种子 2025–2027，加上原来的 PLE 基线，规则是验证集平均 AUC 最大。选中的是 `PLE_fu_lr5e4`（学习率 5e-4，3 种子平均 AUC 0.62963 ± 0.00211）。补上 2028 和 2029 之后，5 种子验证集平均 AUC 是 0.62959 ± 0.00188，click 0.61946 ± 0.00090，曝光级转化 0.63972 ± 0.00427，clicked-only CVR 0.61961 ± 0.00256。它和 g6_gate EQ 的 0.63013 ± 0.00346、g6_residual `W[1,10]` 的 0.63017 ± 0.00115 处在同一档噪声里。
+
+**损失权重。** 按 batch 的 NORM（`L_k / stopgrad(|L_k|)`）在没有转化正样本的 batch 上会把转化梯度乘到大约 `1/L`。8192 行、正样本率约 2.2e-4 时，空转化 batch 大约 16–17%。两次跑了一个 epoch 就停掉的 g6_mean NORM：训练损失 1.843 / 1.842（NORM 在两份损失都非零时应该是 2.0），验证集曝光级转化 AUC 0.5007 / 0.5327。同一种子的 EQ g6_mean 是 0.6445 / 0.6356。我改跑固定权重 `W[1,10]`。验证集上相对 EQ 的配对（n=5）都不显著。平均 AUC：g6_mean −0.00013 ± 0.00366（p=0.942），g6_gate +0.00041 ± 0.00647（p=0.893），g6_residual +0.00098 ± 0.00189（p=0.312）。梯度审计是验证集 16 个 batch、不更新权重：EQ g6_mean 种子 2025 的 raw trunk 比是 9.66（中位数 9.22），在它自己的损失下是 9.659。`W[1,10]` 那个 checkpoint 的 raw 比仍是 10.26，但按它自己的权重折算是 1.026。梯度被拉平了，AUC 没有跟着动。
+
+**clicked-only CVR（验证集，后验评估）。** 每个变体都是 836258 条点击、其中 4665 条转化。g6_gate EQ 的 clicked-only CVR AUC 是 0.62300 ± 0.00729，`p_conv/p_click` 是 0.67100 ± 0.00677。调过的 PLE 是 0.61961 ± 0.00256 和 0.67554 ± 0.00600。g6_mean EQ 是 0.60434 ± 0.01172 和 0.66313 ± 0.00849。完整列在技术报告和 `followup_results.md` 第 4 节。重放的 click AUC 和训练日志的差，最大是 4.9e-07。
+
+**门控。** EQ 上，`g6_gate` 的转化门在 5 个种子里都把 0.96–0.99 放在一个 token 上，熵 0.121305 ± 0.050015，token 随种子变（item_id / item_attr / user_profile）。残差把转化门熵抬到 0.699623 ± 0.467691，λ 停在 click 0.506983 ± 0.003786、曝光级转化 0.499401 ± 0.004778。`followup_results.md` 没有附上 `W[1,10]` 的逐种子门控表，我不另造权重。固定权重没有显著改变 AUC，我也没有新数字说它解开了塌缩。
+
+**一次性最终 test。** 预注册集合是 55 个 checkpoint（7 个 rigor 变体 + 3 个 `W[1,10]` + 选中的 PLE，各 5 个种子），写在 `FROZEN_SET.txt`，写的时候还没有读 test。下面是 test，均值 ± 样本标准差。它不参与任何选择。
+
+| 变体 | click AUC | 曝光级转化 AUC | 平均 AUC | clicked-only CVR AUC |
+| --- | --- | --- | --- | ---: |
+| g3_mean [EQ] | 0.61800 ± 0.00113 | 0.62942 ± 0.00261 | 0.62371 ± 0.00161 | 0.60048 ± 0.00925 |
+| g6_mean [EQ] | 0.61967 ± 0.00145 | 0.63231 ± 0.00597 | 0.62599 ± 0.00354 | 0.60056 ± 0.01272 |
+| g6_residual [EQ] | 0.62016 ± 0.00129 | 0.63419 ± 0.00255 | 0.62718 ± 0.00180 | 0.60536 ± 0.01038 |
+| g6_gate [EQ] | 0.61898 ± 0.00150 | 0.63571 ± 0.00648 | 0.62734 ± 0.00375 | 0.61712 ± 0.00746 |
+| g6_random [EQ] | 0.61938 ± 0.00224 | 0.63436 ± 0.00477 | 0.62687 ± 0.00306 | 0.60896 ± 0.01027 |
+| g6_sequential [EQ] | 0.61998 ± 0.00233 | 0.62797 ± 0.00547 | 0.62397 ± 0.00219 | 0.59664 ± 0.02120 |
+| g6_mean [W[1,10]] | 0.61848 ± 0.00185 | 0.63317 ± 0.00371 | 0.62583 ± 0.00191 | 0.59799 ± 0.01054 |
+| g6_residual [W[1,10]] | 0.61888 ± 0.00114 | 0.63805 ± 0.00232 | 0.62846 ± 0.00140 | 0.61301 ± 0.00503 |
+| g6_gate [W[1,10]] | 0.61955 ± 0.00118 | 0.63842 ± 0.00826 | 0.62898 ± 0.00443 | 0.61749 ± 0.01383 |
+| PLE 基线 [EQ] | 0.61836 ± 0.00273 | 0.62729 ± 0.00340 | 0.62283 ± 0.00237 | 0.59862 ± 0.01314 |
+| PLE lr 5e-4 [EQ] | 0.61960 ± 0.00093 | 0.63502 ± 0.00419 | 0.62731 ± 0.00180 | 0.61460 ± 0.00147 |
+
+预注册配对（test，双侧，df=4）：g6_residual `W[1,10]` − EQ 的平均 AUC +0.00129 ± 0.00111，4/5，t=+2.59，p=0.061。g6_mean EQ − 调过的 PLE，平均 AUC −0.00132 ± 0.00493，1/5，p=0.581；clicked-only CVR −0.01404 ± 0.01183，1/5，p=0.057。g6_mean − g3_mean [EQ] 的平均 AUC +0.00228 ± 0.00408，3/5，p=0.279。这张预注册表里没有 p<0.05。
+
+**局限。** n=5，df=4，功效低。数据是采样后的 Ali-CCP，不是论文里的工业级排序。转化门塌缩还没有解开；`NORM_FLOOR` 只是代码里的分母下限，没有实验。上游 reczoo/FuxiCTR 的 PR 还没有开。
+
+**怎么重跑**
+
+```bash
+# 验证集研究（已跑完；这一步不读 test）
+SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
+# 后续实验。OUT / RG_OUT / PYTHON 可改。记录下来的那次在 A2 之前把 NORM_SET 设成固定权重：
+# echo "MTR_fu_g6_mean_w10 MTR_fu_g6_gate_w10 MTR_fu_g6_residual_w10" > "$OUT/NORM_SET"
+OUT=/root/autodl-tmp/fu_out RG_OUT=/root/autodl-tmp/rg_out \
+  nohup setsid env PATH=/root/miniconda3/bin:$PATH PYTHON=/root/miniconda3/bin/python \
+  bash benchmarks/rankmixer/run_followup.sh 0 > /root/autodl-tmp/fu_driver.log 2>&1 &
+```
+
+Phase D 看到 `final_test/FINAL_TEST_DONE` 就不再读 test。
+
+![验证集，种子 2025，g6_gate，slice=all。点击：scenario 0.432、user_id 0.309，熵 1.143。转化：item_id 0.976，熵 0.140。这一张只是种子 2025，不是 5 个种子的平均。](docs/img/rankmixer/rigor_valid_g6_gate_s2025.png)
+
+![验证集，种子 2025，g6_residual，slice=all。点击：user_id 0.673、cross 0.139，熵 0.815。转化：user_profile 0.536、item_attr 0.227，熵 1.224。这一张只是种子 2025。](docs/img/rankmixer/rigor_valid_g6_residual_s2025.png)
 
 **Criteo_x1 test**（1 epoch、单种子 2025，没有做多种子）
 
@@ -48,14 +94,14 @@ flowchart LR
   C[上下文 token] --> Mix
   Mix --> FFN[Per-token FFN 加残差]
   FFN --> Mean[共享 mean]
-  FFN --> G1[CTR 门控]
-  FFN --> G2[CVR 门控]
+  FFN --> G1[点击门控]
+  FFN --> G2[曝光级转化门控]
   Mean --> L1["λ_click 混合"]
   G1 --> L1
   Mean --> L2["λ_conv 混合"]
   G2 --> L2
-  L1 --> T1[CTR tower]
-  L2 --> T2[CVR tower]
+  L1 --> T1[点击 tower]
+  L2 --> T2[转化 tower]
 ```
 
 ```bash
@@ -65,6 +111,7 @@ bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
 bash benchmarks/rankmixer/run_multiseed.sh 0
 bash benchmarks/rankmixer/run_anticollapse.sh 0
 bash benchmarks/rankmixer/run_sweep.sh 0
+# 重跑命令见上面「怎么重跑」。最终 test 已经按 FROZEN_SET.txt 读过一次。
 ```
 
 ---

@@ -26,6 +26,79 @@ from tqdm import tqdm
 from collections import defaultdict
 
 
+# ``NORM_FLOOR`` is a local guard, not a result. No Ali-CCP run used it.
+NORM_FLOOR_EXPERIMENTALLY_EVALUATED = False
+NORM_FLOOR_MIN = 1e-2
+
+
+def combine_task_losses(losses, loss_weight="EQ"):
+    """Combine per-task scalar losses.
+
+    ``EQ`` is the historical default: the unnormalized sum of the per-task
+    mean losses. It does not divide by the number of tasks and it does not
+    rescale by the loss magnitude. On Ali-CCP the click BCE is much larger
+    than the conversion BCE, so the sum is dominated by click. Training
+    configs keep ``EQ``.
+
+    ``NORM`` divides each task loss by its detached absolute value, then
+    sums, so each task contributes about 1 when every task loss is nonzero.
+    The multiplier on task ``k`` is ``1 / max(|L_k|, 1e-12)``. On Ali-CCP
+    about 16–17% of 8192-row batches contain no conversion. There ``L_conv``
+    underflows toward 0 (or equals ``mean(p)``), and the conversion gradient
+    is multiplied by up to ``1e12``. Two stopped ``g6_mean`` NORM runs
+    (seeds 2025 and 2026, epoch-1 validation) landed at conversion AUC
+    0.5007 and 0.5327, with epoch-mean train loss 1.843 and 1.842 instead
+    of 2.0. See ``benchmarks/rankmixer/results/followup/NORM_collapse_evidence.md``.
+    ``NORM`` stays selectable. It is not stable on this data, and it is not
+    a training default.
+
+    ``NORM_FLOOR`` is the same formula with the denominator clamped to
+    ``NORM_FLOOR_MIN`` (1e-2), so the multiplier is at most 100.
+    ``NORM_FLOOR_EXPERIMENTALLY_EVALUATED`` is False. No follow-up job used it.
+
+    A sequence of floats is a manual weight vector applied as
+    ``sum_k w_k * L_k``. The recorded alternative to per-batch NORM was
+    ``[1.0, 10.0]``.
+
+    Args:
+        losses (list): One scalar tensor per task.
+        loss_weight (str or list): ``"EQ"``, ``"NORM"``, ``"NORM_FLOOR"``,
+            or one weight per task.
+
+    Returns:
+        torch.Tensor: Scalar combined loss.
+
+    Raises:
+        ValueError: If ``loss_weight`` is not a supported mode.
+    """
+    stacked = torch.stack(list(losses))
+    if isinstance(loss_weight, str):
+        mode = loss_weight.upper()
+        if mode == "EQ":
+            return torch.sum(stacked)
+        if mode == "NORM":
+            # Floor of 1e-12 only avoids division by exact zero. It does not
+            # stop the 1/L blow-up on an empty conversion batch.
+            scale = stacked.detach().abs().clamp_min(1e-12)
+            return torch.sum(stacked / scale)
+        if mode == "NORM_FLOOR":
+            # NOT experimentally evaluated. See NORM_FLOOR_EXPERIMENTALLY_EVALUATED.
+            scale = stacked.detach().abs().clamp_min(NORM_FLOOR_MIN)
+            return torch.sum(stacked / scale)
+        raise ValueError(
+            "loss_weight must be 'EQ', 'NORM', 'NORM_FLOOR', or a sequence of floats. "
+            "Got {!r}.".format(loss_weight))
+    if isinstance(loss_weight, (list, tuple)):
+        if len(loss_weight) != int(stacked.shape[0]):
+            raise ValueError(
+                "loss_weight length {} does not match {} tasks.".format(len(loss_weight), int(stacked.shape[0])))
+        weights = stacked.new_tensor([float(value) for value in loss_weight])
+        return torch.sum(stacked * weights)
+    raise ValueError(
+        "loss_weight must be 'EQ', 'NORM', 'NORM_FLOOR', or a sequence of floats. "
+        "Got {!r}.".format(loss_weight))
+
+
 class MultiTaskModel(BaseModel):
     """Base class for multi-task learning models in PyTorch.
 
@@ -37,7 +110,11 @@ class MultiTaskModel(BaseModel):
         model_id (str): Model identifier. Default: ``"MultiTaskModel"``.
         task (list or str): Task type(s) for each task. Default: ``["binary_classification"]``.
         num_tasks (int): Number of tasks. Default: ``1``.
-        loss_weight (str): Loss weighting strategy (e.g., ``EQ`` for equal weighting). Default: ``"EQ"``.
+        loss_weight (str or list): ``"EQ"`` (unnormalized sum, the default),
+            ``"NORM"`` (each loss divided by its detached magnitude; unstable
+            when a task loss is ~0), ``"NORM_FLOOR"`` (same idea, denominator
+            clamped at 1e-2, not experimentally evaluated), or a list of
+            per-task weights. Default: ``"EQ"``.
         gpu (int): GPU device ID, -1 for CPU. Default: ``-1``.
         monitor (str): Metric to monitor for early stopping. Default: ``"AUC"``.
         save_best_only (bool): Whether to save only the best model. Default: ``True``.
@@ -156,10 +233,8 @@ class MultiTaskModel(BaseModel):
         labels = self.feature_map.labels
         loss = [self.loss_fn[i](return_dict["{}_pred".format(labels[i])], y_true[i], reduction='mean')
                 for i in range(len(labels))]
-        if self.loss_weight == 'EQ':
-            # Default: All losses are weighted equally
-            loss = torch.sum(torch.stack(loss))
-        return loss
+        # EQ remains the unnormalized sum. NORM and a weight list are opt-in.
+        return combine_task_losses(loss, self.loss_weight)
 
     def compute_loss(self, return_dict, y_true):
         """Compute the total loss including regularization.

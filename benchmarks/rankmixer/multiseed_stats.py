@@ -12,6 +12,12 @@ from collections import defaultdict
 
 
 METRICS = (
+    "valid_click_auc",
+    "valid_conv_auc",
+    "valid_mean_auc",
+    "valid_click_logloss",
+    "valid_conv_logloss",
+    "valid_mean_logloss",
     "test_click_auc",
     "test_conv_auc",
     "test_mean_auc",
@@ -56,14 +62,18 @@ def main():
         print("No status=ok rows in {}".format(args.csv))
         return
 
-    header = ["model", "n"] + list(METRICS)
+    active = [
+        key for key in METRICS
+        if any(grouped[model][key] for model in grouped)
+    ]
+    header = ["model", "n"] + active
     print("| " + " | ".join(header) + " |")
     print("| " + " | ".join("---" for _ in header) + " |")
     for model in sorted(grouped):
         cells = [model]
-        n = max(len(grouped[model][key]) for key in METRICS)
+        n = max((len(grouped[model][key]) for key in active), default=0)
         cells.append(str(n))
-        for key in METRICS:
+        for key in active:
             values = grouped[model][key]
             if not values:
                 cells.append("")

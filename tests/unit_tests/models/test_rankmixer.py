@@ -464,13 +464,270 @@ Monitor(max)=0.600000 STOP!
 [Task: click][Metrics] logloss: 0.160000 - AUC: 0.620000
 [Task: conversion][Metrics] logloss: 0.002000 - AUC: 0.640000
 """
-        best_epoch, metrics = summary.parse_log(log)
+        best_epoch, valid_metrics, test_metrics = summary.parse_log(log)
         self.assertEqual(best_epoch, "1")
-        self.assertAlmostEqual(metrics["click_auc"], 0.62)
-        self.assertAlmostEqual(metrics["conversion_auc"], 0.64)
+        self.assertEqual(valid_metrics, {})
+        self.assertAlmostEqual(test_metrics["click_auc"], 0.62)
+        self.assertAlmostEqual(test_metrics["conversion_auc"], 0.64)
         uniform = np.full((4, 2, 3), 1.0 / 3.0)
         entropy = gates.mean_gate_entropy(uniform)
         self.assertTrue(np.allclose(entropy, np.log(3.0), atol=1e-6))
+
+
+class TestRigorProtocol(unittest.TestCase):
+    def _load(self, module_name, relative):
+        path = os.path.join(REPO_ROOT, relative)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_stage_flag_defaults_to_validation(self):
+        gates = self._load("analyze_gates_stage", "benchmarks/rankmixer/analyze_gates.py")
+        self.assertEqual(gates.resolve_stage(None), "valid")
+        self.assertEqual(gates.resolve_stage(""), "valid")
+        self.assertEqual(gates.resolve_stage("valid"), "valid")
+        self.assertEqual(gates.resolve_stage("TEST"), "test")
+        with self.assertRaises(ValueError):
+            gates.resolve_stage("train")
+        self.assertIn("validation", gates.stage_note("valid"))
+        self.assertIn("frozen final report", gates.stage_note("test"))
+
+    def test_random_partition_is_deterministic_and_matches_config(self):
+        groups = self._load("field_groups_rigor", "benchmarks/rankmixer/field_groups.py")
+        sequential = groups.g6_sequential_groups()
+        random_a = groups.g6_random_groups()
+        random_b = groups.g6_random_groups(groups.G6_RANDOM_PARTITION_SEED)
+        self.assertEqual(random_a, random_b)
+        self.assertNotEqual(random_a, sequential)
+        self.assertEqual([len(chunk) for chunk in sequential], [3, 3, 3, 3, 3, 3])
+        self.assertEqual([len(chunk) for chunk in random_a], [3, 3, 3, 3, 3, 3])
+        self.assertEqual(sorted(name for chunk in sequential for name in chunk),
+                         sorted(groups.ALI_CCP_FIELDS))
+        self.assertEqual(sorted(name for chunk in random_a for name in chunk),
+                         sorted(groups.ALI_CCP_FIELDS))
+        self.assertEqual(sequential[0], ["101", "121", "122"])
+        self.assertEqual(sequential[-1], ["702", "853", "301"])
+        self.assertNotEqual(groups.g6_random_groups(7), random_a)
+        self.assertEqual(groups.G6_RANDOM_PARTITION_SEED, 42)
+
+        config_path = os.path.join(REPO_ROOT, "benchmarks", "rankmixer", "configs", "rigor", "model_config.yaml")
+        with open(config_path, "r") as handle:
+            config = yaml.load(handle, Loader=yaml.FullLoader)
+        self.assertEqual(config["MTR_rg_g6_sequential"]["feature_groups"], sequential)
+        self.assertEqual(config["MTR_rg_g6_random"]["feature_groups"], random_a)
+        self.assertEqual(config["MTR_rg_g6_random"]["task_pooling"], "mean")
+        self.assertEqual(config["MTR_rg_g6_sequential"]["task_pooling"], "mean")
+        self.assertEqual(config["MTR_rg_g6_mean"]["task_pooling"], "mean")
+        self.assertEqual(config["MTR_rg_g6_gate"]["task_pooling"], "gate")
+        self.assertEqual(config["MTR_rg_g6_residual"]["task_pooling"], "residual")
+        self.assertEqual(config["Base"]["early_stop_patience"], 3)
+        self.assertEqual(config["MTR_rg_g6_mean"]["epochs"], 10)
+        self.assertEqual(config["MTR_rg_g6_mean"]["loss_weight"], "EQ")
+        self.assertEqual(config["PLE_rg"]["epochs"], 10)
+
+    def test_gate_aggregate_is_across_seeds(self):
+        gates = self._load("analyze_gates_agg", "benchmarks/rankmixer/analyze_gates.py")
+        payloads = [
+            {
+                "seed": "2025",
+                "stage": "valid",
+                "token_names": ["user", "item"],
+                "rows": [{
+                    "slice": "all",
+                    "task": "click",
+                    "n": 10,
+                    "user": {"mean": 0.2, "std": 0.1},
+                    "item": {"mean": 0.8, "std": 0.1},
+                }],
+                "entropy": [{"slice": "all", "task": "click", "n": 10, "entropy": 0.4}],
+                "lambdas": [{"task": "click", "lambda": 0.5}],
+            },
+            {
+                "seed": "2026",
+                "stage": "valid",
+                "token_names": ["user", "item"],
+                "rows": [{
+                    "slice": "all",
+                    "task": "click",
+                    "n": 12,
+                    "user": {"mean": 0.4, "std": 0.2},
+                    "item": {"mean": 0.6, "std": 0.2},
+                }],
+                "entropy": [{"slice": "all", "task": "click", "n": 12, "entropy": 0.6}],
+                "lambdas": [{"task": "click", "lambda": 0.7}],
+            },
+        ]
+        aggregated = gates.aggregate_seed_gates(payloads)
+        row = aggregated["rows"][0]
+        self.assertEqual(row["n_seeds"], 2)
+        self.assertAlmostEqual(row["user"]["mean"], 0.3)
+        self.assertAlmostEqual(row["user"]["std"], 0.141421356237, places=5)
+        entropy = gates.aggregate_entropy(payloads)[0]
+        self.assertAlmostEqual(entropy["mean"], 0.5)
+        lambdas = gates.aggregate_lambdas(payloads)[0]
+        self.assertAlmostEqual(lambdas["mean"], 0.6)
+
+    def test_summarizer_skips_gate_logs_and_accepts_validation(self):
+        import tempfile
+        summary = self._load("summarize_rigor", "benchmarks/rankmixer/summarize_multiseed.py")
+        self.assertFalse(summary.is_training_log("gate_g6_gate_s2025.log", "exit 0\n"))
+        self.assertFalse(summary.is_training_log("analyze_gates.log", ""))
+        self.assertFalse(summary.is_training_log("grad_audit.log", ""))
+        self.assertTrue(summary.is_training_log(
+            "MTR_rg_g6_mean_s2025.log", "Start training: 10 batches/epoch\n"))
+        valid_log = """
+Start training: 4 batches/epoch
+Evaluation @epoch 1 - batch 4:
+Save best model: monitor(max)=0.610000
+****** Validation evaluation ******
+[Task: click][Metrics] logloss: 0.160000 - AUC: 0.610000
+[Task: conversion][Metrics] logloss: 0.002000 - AUC: 0.630000
+Skipping test evaluation. The test split stays unread until the design is frozen.
+"""
+        best_epoch, valid_metrics, test_metrics = summary.parse_log(valid_log)
+        self.assertEqual(best_epoch, "1")
+        self.assertAlmostEqual(valid_metrics["click_auc"], 0.61)
+        self.assertAlmostEqual(valid_metrics["conversion_auc"], 0.63)
+        self.assertEqual(test_metrics, {})
+        self.assertEqual(summary.job_status(0, valid_metrics, test_metrics), "ok")
+        self.assertEqual(summary.job_status(0, {}, {}), "failed")
+        self.assertEqual(summary.model_name("MTR_rg_g6_random_s2028"), "g6_random")
+        self.assertEqual(summary.model_name("PLE_rg_s2025"), "PLE")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gate_log = os.path.join(tmp, "gate_g6_gate_s2025.log")
+            train_log = os.path.join(tmp, "MTR_rg_g6_mean_s2025.log")
+            with open(gate_log, "w") as handle:
+                handle.write("token gate weights\n")
+            with open(os.path.join(tmp, "gate_g6_gate_s2025.exit"), "w") as handle:
+                handle.write("1\n")
+            with open(train_log, "w") as handle:
+                handle.write(valid_log)
+            with open(os.path.join(tmp, "MTR_rg_g6_mean_s2025.exit"), "w") as handle:
+                handle.write("0\n")
+            chosen = summary.select_training_logs(tmp)
+            self.assertEqual([path.name for path, _text in chosen], ["MTR_rg_g6_mean_s2025.log"])
+
+    def test_loss_weight_eq_is_the_unnormalized_sum(self):
+        from fuxictr.pytorch.models.multitask_model import combine_task_losses
+        click = torch.tensor(0.16, requires_grad=True)
+        conversion = torch.tensor(0.002, requires_grad=True)
+        eq = combine_task_losses([click, conversion], "EQ")
+        self.assertAlmostEqual(float(eq.detach()), 0.162)
+        weighted = combine_task_losses(
+            [click.detach(), conversion.detach()], [1.0, 50.0])
+        self.assertAlmostEqual(float(weighted), 0.16 + 50.0 * 0.002)
+        click_n = torch.tensor(0.16, requires_grad=True)
+        conv_n = torch.tensor(0.002, requires_grad=True)
+        norm = combine_task_losses([click_n, conv_n], "NORM")
+        self.assertAlmostEqual(float(norm.detach()), 2.0, places=5)
+        norm.backward()
+        self.assertGreater(float(conv_n.grad.abs()), float(click_n.grad.abs()))
+        with self.assertRaises(ValueError):
+            combine_task_losses([click.detach(), conversion.detach()], "UW")
+
+    def test_trunk_grad_norms_cover_the_shared_encoder_only(self):
+        audit = self._load("audit_trunk_grads_unit", "benchmarks/rankmixer/audit_trunk_grads.py")
+        model = TestModels()._mt_model()
+        batch = {
+            "user_id": torch.randint(1, 10, (4,)),
+            "age": torch.randint(1, 5, (4,)),
+            "item_id": torch.randint(1, 12, (4,)),
+            "price": torch.randn(4),
+            "click": torch.randint(0, 2, (4, 1)).float(),
+            "conversion": torch.randint(0, 2, (4, 1)).float(),
+        }
+        report = audit.per_task_trunk_grad_norms(model, batch)
+        self.assertEqual([row["task"] for row in report["tasks"]], ["click", "conversion"])
+        for row in report["tasks"]:
+            self.assertGreater(row["trunk_grad_norm"], 0.0)
+            self.assertGreaterEqual(row["full_grad_norm"] + 1e-8, row["trunk_grad_norm"])
+            self.assertTrue(math_isfinite(row["loss"]))
+        self.assertGreater(report["eq_trunk_grad_norm"], 0.0)
+        tower_names = [name for name, _param in model.named_parameters() if name.startswith("tower.")]
+        self.assertTrue(tower_names)
+        self.assertFalse(any(audit.is_trunk_parameter(name) for name in tower_names))
+        self.assertTrue(audit.is_trunk_parameter("encoder.blocks.0.pffn.ffns.0.0.weight"))
+        text = audit.render_grad_markdown([report], "valid", "unit", synthetic=True)
+        self.assertIn("SYNTHETIC", text)
+        self.assertIn("unnormalized sum", text)
+        self.assertIn("click", text)
+        self.assertIn("conversion", text)
+
+    def test_clicked_only_cvr_auc_uses_clicked_rows_only(self):
+        import numpy as np
+        cvr = self._load("eval_cvr_clicked_unit", "benchmarks/rankmixer/eval_cvr_clicked.py")
+        click = np.array([1, 1, 1, 0, 0, 1], dtype=np.float64)
+        conv = np.array([1, 0, 1, 0, 1, 0], dtype=np.float64)
+        p_click = np.array([0.3, 0.9, 0.95, 0.4, 0.2, 0.2], dtype=np.float64)
+        p_conv = np.array([0.9, 0.8, 0.2, 0.1, 0.7, 0.1], dtype=np.float64)
+        metrics = cvr.compute_metrics(click, conv, p_click, p_conv)
+        self.assertEqual(metrics["n"], 6)
+        self.assertEqual(metrics["n_click"], 4)
+        self.assertEqual(metrics["n_conv"], 3)
+        self.assertEqual(metrics["n_conv_in_clicked"], 2)
+        self.assertEqual(metrics["n_conv_without_click"], 1)
+        from sklearn.metrics import roc_auc_score
+        clicked = click > 0.5
+        self.assertAlmostEqual(
+            metrics["cvr_clicked_auc"],
+            float(roc_auc_score(conv[clicked], p_conv[clicked])))
+        ratio = p_conv[clicked] / np.clip(p_click[clicked], 1e-12, None)
+        self.assertAlmostEqual(
+            metrics["cvr_clicked_auc_ratio"],
+            float(roc_auc_score(conv[clicked], ratio)))
+        self.assertNotAlmostEqual(metrics["cvr_clicked_auc"], metrics["cvr_clicked_auc_ratio"])
+        self.assertNotAlmostEqual(metrics["conv_auc"], metrics["cvr_clicked_auc"])
+
+    def test_norm_empty_conversion_batch_blows_up_and_floor_does_not(self):
+        from fuxictr.pytorch.models.multitask_model import (
+            NORM_FLOOR_EXPERIMENTALLY_EVALUATED,
+            NORM_FLOOR_MIN,
+            combine_task_losses,
+        )
+        self.assertFalse(NORM_FLOOR_EXPERIMENTALLY_EVALUATED)
+        click = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
+        # Exact-zero conversion BCE: an empty batch whose predictions underflowed.
+        conversion = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
+        combine_task_losses([click, conversion], "NORM").backward()
+        self.assertAlmostEqual(float(conversion.grad), 1e12, places=3)
+        self.assertAlmostEqual(float(click.grad), 1.0 / 0.16, places=6)
+        click_f = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
+        conv_f = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
+        combine_task_losses([click_f, conv_f], "NORM_FLOOR").backward()
+        self.assertAlmostEqual(float(conv_f.grad), 1.0 / NORM_FLOOR_MIN, places=6)
+        self.assertLess(float(conv_f.grad), float(conversion.grad))
+        # Tiny but nonzero loss, the mean(p) regime in the collapse note.
+        click_t = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
+        conv_t = torch.tensor(1e-6, dtype=torch.float64, requires_grad=True)
+        combine_task_losses([click_t, conv_t], "NORM").backward()
+        self.assertAlmostEqual(float(conv_t.grad), 1e6, places=3)
+
+    def test_train_steps_compiles_before_train_step(self):
+        audit = self._load("audit_trunk_grads_train_unit", "benchmarks/rankmixer/audit_trunk_grads.py")
+        model = TestModels()._mt_model()
+        batch = {
+            "user_id": torch.randint(1, 10, (4,)),
+            "age": torch.randint(1, 5, (4,)),
+            "item_id": torch.randint(1, 12, (4,)),
+            "price": torch.randn(4),
+            "click": torch.randint(0, 2, (4, 1)).float(),
+            "conversion": torch.zeros(4, 1),
+        }
+        with self.assertRaises(AttributeError):
+            model.train_step(batch)
+        audit.ensure_trainable(model, {
+            "optimizer": "adam",
+            "loss": ["binary_crossentropy", "binary_crossentropy"],
+            "learning_rate": 1e-3,
+        })
+        loss = model.train_step(batch)
+        self.assertTrue(math_isfinite(float(loss.detach())))
+
+
+def math_isfinite(value):
+    return value == value and abs(value) != float("inf")
 
 
 if __name__ == "__main__":
