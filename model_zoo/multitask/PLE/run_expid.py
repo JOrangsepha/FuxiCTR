@@ -41,6 +41,9 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, default='./config/', help='The config directory.')
     parser.add_argument('--expid', type=str, default='DeepFM_test', help='The experiment id to run.')
     parser.add_argument('--gpu', type=int, default=-1, help='The gpu index, -1 for cpu')
+    parser.add_argument('--skip_test', action='store_true',
+                        help='Do not read the test split. Selection stays on validation. '
+                             'Evaluate test only after the design is frozen.')
     args = vars(parser.parse_args())
     
     experiment_id = args['expid']
@@ -73,11 +76,14 @@ if __name__ == '__main__':
     del train_gen, valid_gen
     gc.collect()
     
-    logging.info('******** Test evaluation ********')
-    test_gen = RankDataLoader(feature_map, stage='test', **params)
     test_result = {}
-    if test_gen:
-      test_result = model.evaluate(test_gen)
+    if args['skip_test']:
+        logging.info('Skipping test evaluation. The test split stays unread until the design is frozen.')
+    else:
+        logging.info('******** Test evaluation ********')
+        test_gen = RankDataLoader(feature_map, stage='test', **params)
+        if test_gen:
+            test_result = model.evaluate(test_gen)
     
     result_filename = Path(args['config']).name.replace(".yaml", "") + '.csv'
     with open(result_filename, 'a+') as fw:

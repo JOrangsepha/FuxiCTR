@@ -1,19 +1,21 @@
 # 本 Fork 的贡献：RankMixer + MT-RankMixer
 
-这是我在 FuxiCTR 上做的多任务排序。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：任务门控、塌缩分析、残差池化，以及把语义 token 从 3 个拆到 6 个。
+这是我在 FuxiCTR 上做的多任务排序扩展和诊断，不是「已经打过基线 X%」的新模型。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：任务门控、塌缩诊断、残差池化，以及把语义 token 从 3 个拆到 6 个。下面的 Ali-CCP 表是**开发期研究**：当时用 test 做了门控诊断和结构选择。新的协议是训练后只在验证集上分析和选择，设计冻结之后才读一次 test。验证集上的 T=6 对照还没跑，表里的空位是 pending GPU run，我没有填新数字。
 
-*This fork reproduces RankMixer and adds MT-RankMixer. The latest Ali-CCP gain comes from splitting 3 semantic tokens into 6. Residual gating does not beat mean pooling under the same split; it keeps the gates from collapsing.*
+*This fork reproduces RankMixer and adds MT-RankMixer. The Ali-CCP tables below are a development study: the test split was used for diagnosis and selection. A validation-first rerun is set up and has not been executed, so no new scores are filled in.*
 
-**创新点**
+转化这一列是曝光上的 conversion，和 click 一样定义在整条曝光上。它不是「只在 click=1 里算的 CVR」。除非另做点击条件 CVR，下文都叫曝光级联合转化。
 
-1. **Per-task token gating + 语义 token。** CTR 和 CVR 不再共用一次 mean-pooling，而是各自对用户 / 商品 / 上下文 token 做门控。
-2. **门控塌缩的发现和可解释性分析。** 3 种子复核后，转化门控塌到商品 token（0.971）。拆成 6 个 token 之后，原门控的转化头再次塌到商品 ID（0.966）。
-3. **残差门控池化。** \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。6 token 上 λ 约 0.51 / 0.50，点击侧重用户 ID，转化侧重用户画像，门没有塌缩。
-4. **细粒度语义 tokenization 带来主要收益。** 3 token 共享 mean 到 6 token 共享 mean，test 平均 AUC 约 +0.0019，主要在转化 AUC。同一切分下残差只比 mean 高约 +0.0004。
+**到目前为止能说的**
 
-**Ali-CCP test 平均 AUC**（3 种子，均值 ± 样本标准差，early stopping；PaddleRec 公开镜像）
+1. **Per-task token gating。** 点击和转化可以各自对 token 做门控，也可以退回共享 mean。残差池化是 \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。
+2. **种子 2025 上看到过门控塌缩，多种子验证集汇总还没有。** 开发期里，种子 2025 的 test 切片上，3 token 转化门约 0.971 落在商品 token；6 token 原门控的转化头约 0.966 落在商品 ID。这是一个种子，不是 2025/2026/2027 的均值 ± 标准差。多种子门控要在验证集上重算，结果 pending GPU run。
+3. **同一种 6 token 切分下，残差和共享 mean 在开发期 test 上打平**（约 +0.0004）。残差留下的是可解释的门，不是已经确认的 AUC 提升。
+4. **3 token 到 6 token 的约 +0.0019 还不能写成语义分解的收益。** 那次改动同时换了分组、Per-token FFN 个数和 mixing 的头宽。T=6 的随机切分和顺序切分还没在验证集上跑完。
 
-| 模型 | conv AUC | 平均 AUC |
+**Ali-CCP 开发期 test 平均 AUC**（3 种子，均值 ± 样本标准差；当时用 test 做了选择；PaddleRec 公开镜像）
+
+| 模型 | 曝光级转化 AUC | 平均 AUC |
 | --- | --- | ---: |
 | g6_residual（6 token） | 0.63468 ± 0.00680 | 0.62724 ± 0.00359 |
 | g6_mean（6 token） | 0.63473 ± 0.00327 | 0.62687 ± 0.00208 |
@@ -24,11 +26,11 @@
 | PLE | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
 | 原 per-task gating（3 token） | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
 
-6 token 相对 3 token 共享 mean 大约高 0.0019，约一个标准差，有迹象但不确定。`g6_residual` 相对同 tokenization 的 `g6_mean` 只高 +0.0004，打平。残差留下的是可解释的任务门：种子 2025 上点击偏用户 ID（0.59），转化偏用户画像（0.57）。
+新协议下的验证集结果（`g3_mean`、`g6_mean`、`g6_residual`、`g6_gate`、`g6_random`、`g6_sequential`、PLE；种子 2025/2026/2027，可扩到 2028/2029）：pending GPU run。
 
-![6 token 原门控：转化塌到商品 ID（0.966）。](docs/img/rankmixer/gate_g6_gate_s2025.png)
+![6 token 原门控，种子 2025 的 test 切片：转化约 0.966 在商品 ID。多种子验证集汇总 pending。](docs/img/rankmixer/gate_g6_gate_s2025.png)
 
-![6 token 残差门控：点击偏用户 ID，转化偏用户画像，λ 约 0.5。](docs/img/rankmixer/gate_g6_residual_s2025.png)
+![6 token 残差门控，种子 2025：点击偏用户 ID，转化偏用户画像，λ 约 0.5。多种子验证集汇总 pending。](docs/img/rankmixer/gate_g6_residual_s2025.png)
 
 **Criteo_x1 test**（1 epoch、单种子 2025，没有做多种子）
 
@@ -48,14 +50,14 @@ flowchart LR
   C[上下文 token] --> Mix
   Mix --> FFN[Per-token FFN 加残差]
   FFN --> Mean[共享 mean]
-  FFN --> G1[CTR 门控]
-  FFN --> G2[CVR 门控]
+  FFN --> G1[点击门控]
+  FFN --> G2[曝光级转化门控]
   Mean --> L1["λ_click 混合"]
   G1 --> L1
   Mean --> L2["λ_conv 混合"]
   G2 --> L2
-  L1 --> T1[CTR tower]
-  L2 --> T2[CVR tower]
+  L1 --> T1[点击 tower]
+  L2 --> T2[转化 tower]
 ```
 
 ```bash
@@ -65,6 +67,10 @@ bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
 bash benchmarks/rankmixer/run_multiseed.sh 0
 bash benchmarks/rankmixer/run_anticollapse.sh 0
 bash benchmarks/rankmixer/run_sweep.sh 0
+# 新协议：验证集上训练、分析和选择。不读 test。
+bash benchmarks/rankmixer/run_rigor_suite.sh 0
+# 五个种子：SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
+# 设计冻结之后才读一次 test：bash benchmarks/rankmixer/run_final_test.sh 0
 ```
 
 ---

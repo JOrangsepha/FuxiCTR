@@ -9,6 +9,10 @@
 # nine of those first attempts died with Ray LocalRayletDiedError and were
 # rerun. The final 21 logs all exited 0.
 #
+# Development-study driver. Gate tables are scored with --stage test so a
+# rerun matches the archived test-split figures. New selection uses
+# run_rigor_suite.sh, which stays on validation.
+#
 # Usage, repo at /root/autodl-tmp/FuxiCTR:
 #   bash /root/autodl-tmp/FuxiCTR/benchmarks/rankmixer/run_sweep.sh 0
 
@@ -100,6 +104,7 @@ for spec in "${JOBS[@]}"; do
     fi
     timeout --signal=TERM --kill-after=60s "$TIMEOUT" \
         "$PY" "$ROOT/benchmarks/rankmixer/analyze_gates.py" --gpu "$GPU" \
+        --stage test \
         --checkpoint "$ckpt" \
         --config "$OUT/configs/${expid}" \
         --expid "$expid" \

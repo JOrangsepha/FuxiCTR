@@ -27,11 +27,11 @@ The first FuxiCTR launch also builds `feature_map.json` and the parquet cache un
 
 The existing multi-task configs in this repo only reference `tiny_mtl`. Ali-CCP is the public click/conversion set used for this comparison. The recorded run in section 5 used the PaddleRec public mirror, [https://paddlerec.bj.bcebos.com/datasets/aitm/](https://paddlerec.bj.bcebos.com/datasets/aitm/), which does not require Tianchi student verification. The steps below are an alternative path from Tianchi dataset 408.
 
-1. Download `sample_skeleton_{train,test}.csv` and `common_features_{train,test}.csv` from https://tianchi.aliyun.com/dataset/408 (login required). There is no official validation split.
+1. Download `sample_skeleton_{train,test}.csv` and `common_features_{train,test}.csv` from https://tianchi.aliyun.com/dataset/408 (login required). There is no official validation split. The official test file stays the test split.
 2. Join skeleton rows with common features and keep the 18 categorical ids used by the AITM / Torch-RecHub preprocessing:
    `101, 121, 122, 124, 125, 126, 127, 128, 129, 205, 206, 207, 216, 508, 509, 702, 853, 301`.
    A readable reference script is https://github.com/xidongbo/AITM/blob/main/process_public_dataset.py (it names the second label `purchase`; rename that column to `conversion`).
-3. Hold out 10% of the training rows, in order, as `valid.csv`. Write:
+3. The recorded Ali-CCP cache follows that AITM script, not a sequential prefix. `process_public_dataset.py` sets `random.seed(2020)` and writes a processed training row to dev when `random.random() >= 0.9`, so validation is a random ~10% holdout with that fixed seed. The PaddleRec public mirror used for the tables below is the same kind of split. Write:
 
 ```text
 data/AliCCP/AliCCP_x1/train.csv
@@ -138,7 +138,7 @@ bash benchmarks/rankmixer/run_multiseed.sh 0
 bash benchmarks/rankmixer/run_anticollapse.sh 0
 ```
 
-`run_anticollapse.sh` writes under `/root/autodl-tmp/ac_out/` and then analyzes both seed-2025 checkpoints (500k rows). `anticollapse_summary.csv` marks the two analysis logs as failed because the summarizer only parses training logs; the markdown and png analyses themselves succeeded.
+`run_anticollapse.sh` writes under `/root/autodl-tmp/ac_out/` and then analyzes both seed-2025 checkpoints on the test split (500k rows), which is the development-study protocol. The archived `anticollapse_summary.csv` still marks the two analysis logs as failed. That was a summarizer bug: it treated `gate_*.log` as training runs. `summarize_multiseed.py` now skips `gate_` / `analyze_` / `grad_` logs and only parses `run_expid` training logs. The archived CSV was not rewritten.
 
 ## 7. Finer tokens and a 21-run sweep (recorded)
 
@@ -170,4 +170,22 @@ Moving shared mean from 3 tokens to 6 tokens is +0.00191 mean AUC and about +0.0
 
 ```bash
 bash benchmarks/rankmixer/run_sweep.sh 0
+```
+
+## 8. Rigor suite (validation first; scores pending)
+
+The tables in sections 5–7 are a development study. Test rows were used for gate diagnosis and for choosing which variant to write up. The rerun does not do that.
+
+`run_rigor_suite.sh` trains with `--skip_test`, runs `analyze_gates.py --stage valid` on every gated or residual seed, aggregates mean ± sample std across seeds, audits trunk gradient norms on one `g6_mean` checkpoint, and summarizes validation metrics. It does not open the test parquet. `run_final_test.sh` is the one test pass, and only after the design is frozen.
+
+Headline models, existing Ali-CCP parquet: `g3_mean`, `g6_mean`, `g6_residual`, `g6_gate`, `g6_random`, `g6_sequential`, PLE. Default seeds 2025 / 2026 / 2027. Five seeds: `SEEDS="2025 2026 2027 2028 2029"`. Budget: batch 8192, embedding 16, Adam `1e-3`, epochs ≤ 10, `early_stop_patience: 3`. `g6_random` and `g6_sequential` are shared-mean controls at T=6. The random partition seed is 42 (Fisher-Yates via `random.Random.random`, then chunks of 3). The sequential groups are contiguous chunks of the 18-field list. Parallelism defaults to 2.
+
+Validation metrics: pending GPU run. Do not treat the development-study test table as this suite's result.
+
+```bash
+# Repo at /root/autodl-tmp/FuxiCTR, parquet cache already at data/AliCCP/AliCCP_x1/.
+bash /root/autodl-tmp/FuxiCTR/benchmarks/rankmixer/run_rigor_suite.sh 0
+# OUT defaults to /root/autodl-tmp/rg_out. STATUS and ALL_DONE are written there.
+# After the design is frozen:
+OUT=/root/autodl-tmp/rg_out bash /root/autodl-tmp/FuxiCTR/benchmarks/rankmixer/run_final_test.sh 0
 ```

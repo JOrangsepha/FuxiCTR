@@ -1,8 +1,68 @@
 # MT-RankMixer 研究笔记
 
-这篇笔记记的是我在 FuxiCTR 里做的多任务排序。顺序是：假设，单种子初步结果，多种子复核，门控塌缩，残差门控和熵正则，然后是细粒度 token 的参数扫描。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025，arXiv:2507.15551）。我自己的部分是 MT-RankMixer。
+这篇笔记记的是我在 FuxiCTR 里做的多任务排序扩展和诊断。顺序是：假设，单种子初步结果，多种子复核，门控塌缩，残差门控和熵正则，然后是细粒度 token 的参数扫描。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025，arXiv:2507.15551）。我自己的部分是 MT-RankMixer。
 
-数字全部来自已经跑完的 RTX 4090 记录，原始表在 `benchmarks/rankmixer/results/`。
+已经跑完的数字全部来自 RTX 4090，原始表在 `benchmarks/rankmixer/results/`。第 2–7 节是开发期研究：当时用 test 做了诊断和选择。协议更正在下面。新一轮验证集结果还没有，我留空，不编数字。转化 AUC 都是曝光级联合转化（和 click 一样定义在整条曝光上），不是只在 click=1 里算的 CVR。
+
+## 协议更正（Protocol correction）
+
+前面几节的数字我现在改称为**开发期研究**。训练、门控诊断、结构选择和写进表里的对比，用的都是同一份 test。验证集只参与 early stopping。test 被看了很多次，不能再当作「最后只碰一次」的最终测试。那些 AUC 和门控均值都保留，但它们回答的是开发过程里我看到了什么，不是冻结设计之后的确认。
+
+新的流程是：
+
+1. 训练。Early stopping 仍然看验证集上 click AUC 和曝光级转化 AUC 的平均。`run_rigor_suite.sh` 给 `run_expid.py` 加 `--skip_test`，训练日志里不再读 test。
+2. 分析和选择只用验证集。`analyze_gates.py --stage valid` 是新的默认值。多种子门控在验证集上汇总成均值 ± 样本标准差。
+3. 设计冻结之后，才用 `run_final_test.sh` 对每个冻结 checkpoint 读一次 test。这一步不会被 rigor suite 调用。
+
+`--stage test` 还留着，只给这份冻结后的最终报告，以及复现开发期已经跑完的 test 门控表。`run_sweep.sh` 和 `run_anticollapse.sh` 显式传 `--stage test`，避免默认值改成 valid 之后悄悄改变旧实验。
+
+T=6 还有一个混杂。从 3 个语义 token 换成 6 个，同时改了字段怎么分组、PerTokenFFN 的个数、mixing 的 \(H=T\) 和 `head_dim=D/T`，以及 tokenizer 的投影。开发期里「6 token 比 3 token 高大约 0.0019」不能写成语义分解已经赢了。接下来要跑的对照，把 T、D、L、k、优化器和池化对齐 `g6_mean`（共享 mean），只改 18 个字段怎么切成 6 组：
+
+| 变体 | 分组 | 池化 |
+| --- | --- | --- |
+| g3_mean | 原来的用户 / 商品 / 上下文 | mean |
+| g6_mean | 现在的 6 组语义 | mean |
+| g6_residual | 同一套 6 组语义 | residual |
+| g6_gate | 同一套 6 组语义 | gate |
+| g6_random | 随机 6 组，每组 3 个字段，划分种子 42 | mean |
+| g6_sequential | 按字段表顺序切成 6 组，每组 3 个字段 | mean |
+| PLE | 无 token | — |
+
+`g6_random` 的划分用固定的 Fisher-Yates，只调用 `random.Random(42).random()`，和训练种子无关。打乱之后的分组写进 `benchmarks/rankmixer/configs/rigor/model_config.yaml`，不在每次训练时重抽。`g6_sequential` 的顺序就是特征列表 `101, 121, …, 301`。
+
+有一个容量差我先写在这里，避免以后把对照说满。语义 6 组的大小是 1、8、1、3、4、1，每组投影是 `Linear(组大小 × 16, 48)`。随机组和顺序组都是 3+3+3+3+3+3，投影都是 `Linear(48, 48)`。这组对照拿掉的是「我按语义亲手切组」和「T 从 3 变到 6」绑在一起的那件事。投影参数量并没有和 `g6_mean` 对齐。在 GPU 结果出来之前，我不声称语义分组优于随机切分或顺序切分。
+
+种子先跑 2025、2026、2027。要扩到 5 个种子时设 `SEEDS="2025 2026 2027 2028 2029"`。预算：batch 8192，embedding 16，Adam `1e-3`，epoch 上限 10，`early_stop_patience: 3`。这是相对旧设置 patience 1、epoch 上限 6 的一次敏感度检查，不是新的调参结论。
+
+门控塌缩目前只在种子 2025 的 test 切片上看到（3 token 转化门约 0.971 在商品 token，6 token 原门控约 0.966 在商品 ID）。多种子的验证集门控均值还没有。
+
+验证集结果（待 GPU，不填数字）：
+
+| 变体 | valid click AUC | valid 曝光级转化 AUC | valid 平均 AUC |
+| --- | --- | --- | --- |
+| g3_mean | pending GPU run | pending GPU run | pending GPU run |
+| g6_mean | pending GPU run | pending GPU run | pending GPU run |
+| g6_residual | pending GPU run | pending GPU run | pending GPU run |
+| g6_gate | pending GPU run | pending GPU run | pending GPU run |
+| g6_random | pending GPU run | pending GPU run | pending GPU run |
+| g6_sequential | pending GPU run | pending GPU run | pending GPU run |
+| PLE | pending GPU run | pending GPU run | pending GPU run |
+
+验证集上的多种子门控均值 ± 标准差：pending GPU run。
+
+主干梯度：`loss_weight: EQ` 是两份二元交叉熵的直接相加，没有按任务归一。点击的 logloss 大约 0.16，转化大约 0.002，点击梯度可能主导共享 trunk。`audit_trunk_grads.py` 会在验证集的若干 batch 上记下 `||∇_trunk L_click||` 和 `||∇_trunk L_conv||`。数字 pending GPU run。训练默认仍是 EQ。`MultiTaskModel.combine_task_losses` 另外接受一列手动权重，或 `NORM`（每个任务损失先除以自己的 detach 绝对值再相加）。这两档不进这轮 rigor 配置。
+
+Ali-CCP 没有官方验证集。这份数据来自 PaddleRec 公开镜像，预处理对齐 AITM 的 `process_public_dataset.py`：`random.seed(2020)`，处理过的训练行在 `random.random() >= 0.9` 时放进 dev，大约 10%，不是按文件顺序切前 10%。官方 test 文件单独留下。
+
+```bash
+bash benchmarks/rankmixer/run_rigor_suite.sh 0
+# 五个种子：
+SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
+# 设计冻结之后才跑：
+bash benchmarks/rankmixer/run_final_test.sh 0
+```
+
+汇总脚本以前把 `gate_*.log` 当成失败的训练。现在只解析 `run_expid` 的训练日志。已经归档的 csv 没有改，里面那些 `failed` 行仍是旧脚本留下的。
 
 ## 1. 假设
 
@@ -24,6 +84,8 @@ h_k = \sum_t \alpha_{k,t} x_t, \qquad
 
 ## 2. 初步结果（单种子，Ali-CCP 部分已被多种子取代）
 
+> 开发期研究。这一节的 Ali-CCP 表用了 test，不是冻结后的最终测试。
+
 第一次 GPU 对照是 2026-10-05 12:15:54–12:57:40 CST，AutoDL 上 1 × RTX 4090，commit `5bbf507`，9 个任务全部 exit 0，流水线 2505 秒。公共设置：`epochs=1`，`batch_size=8192`，`embedding_dim=16`，Adam，学习率 `1e-3`，`seed=2025`，无正则、无 dropout。Epoch 时间只计训练。
 
 当时 semantic 的转化 AUC 看起来明显领先。我没有把它当成结论，后面用 3 个种子和 early stopping 复核。复核之后，这一节的 Ali-CCP 表只保留为初步结果，**已被第 3 节和第 6 节的多种子结果取代**。Criteo 没有做多种子，仍是这一档：1 epoch、单种子。
@@ -43,7 +105,7 @@ Test AUC 上，RankMixer 比 DNN 高 0.0014（0.808522 − 0.807165），比 WuK
 
 ### 2.2 Ali-CCP 初步结果（1 epoch，单种子；已被取代）
 
-AliCCP_x1 来自 PaddleRec 公开镜像 https://paddlerec.bj.bcebos.com/datasets/aitm/ ，不是需要学生认证的天池原版。4648 batch/epoch，约 3800 万训练样本，`min_categr_count=10`。语义分组 `T=3, D=48`；顺序切块 `T=8, D=64`。
+AliCCP_x1 来自 PaddleRec 公开镜像 https://paddlerec.bj.bcebos.com/datasets/aitm/ ，不是需要学生认证的天池原版。4648 batch/epoch，约 3800 万训练样本，`min_categr_count=10`。语义分组 `T=3, D=48`；顺序切块 `T=8, D=64`。验证集不是按训练文件顺序切出来的前 10%。AITM 的 `process_public_dataset.py` 用 `random.seed(2020)`，在 `random.random() >= 0.9` 时把处理过的训练行放进 dev，大约 10%。官方 test 文件单独留下。PaddleRec 镜像是同一种切分。
 
 Test：
 
@@ -68,6 +130,8 @@ Valid：
 单种子上，semantic 的转化 AUC 0.640612，比 PLE 的 0.624989 高约 0.016，平均 AUC 也最高；点击略低约 0.002。顺序切块弱于语义分组。我当时的解释是：语义 token 让 CVR 的门能抬高用户和商品。这个解释后来被门控统计推翻了一半，见第 4 节。转化 AUC 领先 0.016 这件事，在多种子下没有复现。
 
 ## 3. 多种子复核：单种子优势不成立
+
+> 开发期研究。表里的 test AUC 参加了当时的比较。新协议下这些数字只作为开发记录。
 
 我用种子 2025、2026、2027 重跑了三组：语义 per-task gating、同一主干的共享 mean（`task_pooling: mean`）、PLE。超参和初步实验一致：batch 8192，embedding 16，Adam `1e-3`，无正则、无 dropout。Epoch 上限 6，`early_stop_patience: 1`。`monitor: AUC` 是 click AUC 和 conversion AUC 的算术平均，因为 `MultiTaskModel.evaluate` 把这个平均写回裸键 `AUC`。测试指标来自恢复出来的最佳 checkpoint。
 
@@ -103,6 +167,8 @@ Test，逐次运行：
 
 ## 4. 原因：转化门控塌缩到商品 token
 
+> 开发期研究，而且只是种子 2025 的 test 前 50 万行。多种子验证集门控均值 pending GPU run。
+
 我没有停在「消融输了」。种子 2025 的门控 checkpoint 上，我对 test 集前 50 万行统计了三个语义 token 的平均门控。完整表在 `benchmarks/rankmixer/results/multiseed_gate_analysis.md`。
 
 全量切片（\(n = 500000\)）：
@@ -124,6 +190,8 @@ Test，逐次运行：
 
 ## 5. 针对性改进：残差门控，以及熵正则对照
 
+> 开发期研究。下面的设计说明仍然有效；表里的 test 数字不是冻结后的最终测试。
+
 塌缩的直接原因是门控可以变成 one-hot，而且没有任何东西强制它留下其他 token。我做了两个改动，默认配置仍是原来的 per-task gate，β 默认为 0。
 
 **残差门控池化（主方案）。** 每个任务学一个 sigmoid 标量 \(\lambda_k\)，初始化为 0.5（`lambda_raw` 用 0 初始化，sigmoid 后是 0.5）。池化是共享 mean 和门控混合的凸组合：
@@ -143,6 +211,8 @@ h_k = \lambda_k \, \mathrm{mean}_t(x_t) + (1-\lambda_k) \sum_t \alpha_{k,t} x_t.
 两次实验的 expid 是 `MTRankMixer_aliccp_semantic_residual_s{seed}` 和 `MTRankMixer_aliccp_semantic_entropy_s{seed}`，种子仍是 2025 / 2026 / 2027，其余超参与多种子复核相同。代码是 commit `5627b6c`。
 
 ## 6. 结果：残差版与共享 mean 打平
+
+> 开发期研究。残差和共享 mean 打平，说的是当时的 test 表。
 
 Test，逐次运行。6 次的最佳 epoch 都是 1，都在第 2 个 epoch 后 early stop。原始表见 `benchmarks/rankmixer/results/anticollapse_results.md`。
 
@@ -188,15 +258,17 @@ Test，逐次运行。6 次的最佳 epoch 都是 1，都在第 2 个 epoch 后 
 
 ![熵正则 0.01 的门控。两扇门都接近均匀。](img/rankmixer/gate_entropy_s2025.png)
 
-这轮单次墙钟大约 595–604 秒，上一轮大约 427–589 秒。两次用的驱动不同，时间不能直接比。`anticollapse_summary.csv` 里 `gate_entropy_s2025` 和 `gate_residual_s2025` 两行是 `failed`：汇总脚本只解析训练日志，把分析日志当成了失败的训练。对应的 markdown 和 png 是成功的，上面的门控表来自那两份分析。
+这轮单次墙钟大约 595–604 秒，上一轮大约 427–589 秒。两次用的驱动不同，时间不能直接比。归档的 `anticollapse_summary.csv` 里 `gate_entropy_s2025` 和 `gate_residual_s2025` 两行是 `failed`：当时的汇总脚本把分析日志当成了失败的训练。对应的 markdown 和 png 是成功的，上面的门控表来自那两份分析。脚本现在会跳过 `gate_*.log`。归档 csv 没有改。
 
 ## 7. 细粒度 token：门控打不过 mean 之后
+
+> 开发期研究。这一节的 test 表参加了结构选择。T=6 语义组是否优于随机切分或顺序切分，要等验证集对照，现在不能下结论。
 
 第 6 节的结论是：在 3 个语义 token 上，残差门控没有明显胜过共享 mean。我因此怀疑瓶颈不在门的公式，而在 token 太粗。用户、商品、上下文各压成一个 token 之后，门控几乎没有可选的对象，softmax 只能在三个顶点里塌缩。于是我做了一轮 7 个变体、各种子 3 次、一共 21 次成功运行的扫描。超参和前面一致：batch 8192，embedding 16，Adam `1e-3`，epoch 上限 6，`early_stop_patience: 1`，监控两任务 AUC 的平均。数据仍是同一份 Ali-CCP parquet。
 
 变体分两组。一组仍是 3 个 token，只改门：`ent0001` / `ent0003` 是原门控加上更小的熵系数 0.001 和 0.003；`res_ent0001` 是残差加熵 0.001；`res_temp2` 是残差、门控温度 2。另一组把语义 token 从 3 个拆成 6 个，`token_dim` 仍是 48：用户 ID `[101]`、用户画像 `[121,122,124,125,126,127,128,129]`、商品 ID `[205]`、商品类目/店铺/品牌 `[206,207,216]`、交叉特征 `[508,509,702,853]`、场景 `[301]`。这三行是 `g6_mean`、`g6_gate`、`g6_residual`。配置在 `benchmarks/rankmixer/configs/sweep/`，expid 是 `MTR_sw_<variant>_s{seed}`。
 
-实验细节里有一件环境问题：最初 3 个任务并发时，有 9 次首轮运行因 Ray raylet 崩溃（`LocalRayletDiedError`）失败。那些任务重跑之后，最终 21 次全部 exit 0。原始表在 `benchmarks/rankmixer/results/sweep_results.md`。`sweep_summary.csv` 里带 `gate_` 前缀的行是 `failed`，因为汇总脚本只解析训练日志；对应的门控 markdown 和 png 是成功的。
+实验细节里有一件环境问题：最初 3 个任务并发时，有 9 次首轮运行因 Ray raylet 崩溃（`LocalRayletDiedError`）失败。那些任务重跑之后，最终 21 次全部 exit 0。原始表在 `benchmarks/rankmixer/results/sweep_results.md`。归档的 `sweep_summary.csv` 里带 `gate_` 前缀的行是 `failed`，因为当时的汇总脚本只解析训练日志；对应的门控 markdown 和 png 是成功的。脚本已经改掉，归档 csv 没有改。
 
 除了 `ent0001` 的种子 2027 和 `g6_gate` 的种子 2027（最佳 epoch 是 2），其余 19 次的最佳 epoch 都是 1。
 
@@ -243,7 +315,7 @@ Test，逐次运行：
 | ent0003 | 0.61849 ± 0.00046 | 0.62725 ± 0.00349 | 0.62287 ± 0.00192 | −0.00209 | −0.00400 | −0.00013 |
 | 原 per-task gating（3 token） | 0.61835 ± 0.00160 | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 | −0.00212 | −0.00403 | −0.00016 |
 
-**主要收益来自更细的 tokenization，不是来自门。** 共享 mean 从 3 个 token 的 0.62496 到 6 个 token 的 0.62687，平均 AUC +0.00191，约 +0.0019。转化 AUC 从 0.63168 到 0.63473，大约 +0.0031。这个差距和两边的标准差（0.00208 和 0.00240）差不多，是一个标准差的量级。3 个种子下，我把它写成「有迹象，但不确定」。`g6_residual` 和 `g6_mean` 相对 PLE 的领先是 +0.00424 和 +0.00387，都超过一个标准差。
+**开发期读法：主要的数字差异来自更细的 tokenization，不是来自门。** 共享 mean 从 3 个 token 的 0.62496 到 6 个 token 的 0.62687，平均 AUC +0.00191，约 +0.0019。曝光级转化 AUC 从 0.63168 到 0.63473，大约 +0.0031。这个差距和两边的标准差（0.00208 和 0.00240）差不多，是一个标准差的量级。3 个种子下，我把它写成「有迹象，但不确定」。`g6_residual` 和 `g6_mean` 相对 PLE 的领先是 +0.00424 和 +0.00387，都超过一个标准差。这句只描述开发期的 test 表。test 参加了选择，而且 3 token 到 6 token 同时改了分组、FFN 个数和 mixing 的头宽。在 `g6_random` 和 `g6_sequential` 的验证集结果出来之前，我不能说语义分解赢了。
 
 **同一种 6-token 切分里，残差没有超过共享 mean。** `g6_residual` 的平均 AUC 0.62724 ± 0.00359 是这张表里最高的，但相对 `g6_mean` 只有 +0.00037，约 +0.0004，落在噪声里。这里只能说打平。`g6_gate` 比 `g6_mean` 低 0.00052。
 
@@ -267,16 +339,17 @@ Test，逐次运行：
 
 ## 8. 反思与以后做什么
 
-到这里，故事是四句。共享池化会让两个任务抢表示，门控也确实学出不同偏好。无约束 softmax 会塌缩，3 token 上单种子的转化优势没有复现。残差池化能防住塌缩，但在同一种 tokenization 里没有明显胜过共享 mean。把 token 从 3 个拆到 6 个，平均 AUC 大约高 0.0019，这是目前最大的一截，不过只有 3 个种子，大约一个标准差，还不能写成确定的提升。
+到这里，开发期的故事是四句。共享池化会让两个任务抢表示，门控也确实学出不同偏好。无约束 softmax 会塌缩，3 token 上单种子的转化优势没有复现。残差池化能防住塌缩，但在同一种 tokenization 里没有明显胜过共享 mean。把 token 从 3 个拆到 6 个，开发期 test 平均 AUC 大约高 0.0019。这是开发期表里最大的一截，不过只有 3 个种子，大约一个标准差，而且和 T、FFN 个数绑在一起。验证集上的随机切分和顺序切分还没跑，不能写成确定的语义提升。
 
-后面如果还做：
+下一轮已经写成脚本，结果还是空的：
 
-- 用更多种子确认 6 token 相对 3 token 的 +0.0019。现在 `g6_mean` 的标准差是 0.00208，`g6_residual` 是 0.00359，转化标准差更大（0.00327 和 0.00680）。
+- `run_rigor_suite.sh` 在验证集上跑 `g3_mean`、`g6_mean`、`g6_residual`、`g6_gate`、`g6_random`（划分种子 42）、`g6_sequential` 和 PLE。种子默认 2025/2026/2027，可加 2028/2029。patience 3，epoch 上限 10。AUC 和多种子门控都是 pending GPU run。
+- 用这轮结果再看 6 token 相对 3 token 的开发期 +0.0019 还在不在。现在 `g6_mean` 的标准差是 0.00208，`g6_residual` 是 0.00359，转化标准差更大（0.00327 和 0.00680）。
 - 继续拆，或者让 token 划分可学习。这次的 6 组是我按字段含义手切的。场景只有 `301` 一个字段，交叉特征仍捆在一起。
 - 换到更大的数据上验证。Ali-CCP 转化正样本仍然极少，50 万行里 `conversion=1` 只有 159 条。稠密宽度也远小于论文里的 100M / 1B。
 - 6 个 token 的逐 token FFN 参数大约是 3 个 token 的两倍。沿用第 9 节的公式 \(2kLTD^2\)，\(k=2, L=2, D=48\) 时，3 token 是 55296，6 token 是 110592。扫描附件里没有参数量，这只是容量上的混杂。+0.0019 里有多少来自「分得更细」，有多少来自「稠密层变宽」，这组实验分不开。
 - 最佳 epoch 大多仍是 1。`ent0001` 和 `g6_gate` 各有一个种子停在 epoch 2。λ 仍停在 0.5 附近。更长的训练或更小的学习率还没做。
-- `loss_weight: EQ` 仍把两份损失直接相加。不对称损失、task-specific token、不对称 tower，都还没有实验。
+- `loss_weight: EQ` 仍是默认，两份 BCE 直接相加。`NORM` 和手动权重只是 `combine_task_losses` 里的钩子，rigor 配置没有打开，也还没有实验。不对称 tower 同样没有做。主干梯度的验证集审计脚本已经写好，数字 pending GPU run。
 
 ## 9. 方法备忘
 
@@ -292,13 +365,13 @@ Test，逐次运行：
 
 **和 MMoE 的差别。** MMoE 的专家读同一份展平嵌入。这里的 per-token FFN 各看各的 token，任务门控发生在 mixing 之后，对象是 token。
 
-**开关。** `task_pooling: gate` 是默认。`task_pooling: mean` 或 `gate_type: mean` 是共享 mean。`task_pooling: residual` 是第 5 节的混合，不能再同时把 `gate_type` 设成 `mean`。`gate_entropy_reg` 默认 0。第 6 节的对照用 0.01，第 7 节又试了 0.001 和 0.003。`gate_temperature` 默认 1，除 logits 再做 softmax 或 sigmoid；第 7 节的 `res_temp2` 用的是 2。6 token 的分组在 `benchmarks/rankmixer/configs/sweep/`。
+**开关。** `task_pooling: gate` 是默认。`task_pooling: mean` 或 `gate_type: mean` 是共享 mean。`task_pooling: residual` 是第 5 节的混合，不能再同时把 `gate_type` 设成 `mean`。`gate_entropy_reg` 默认 0。第 6 节的对照用 0.01，第 7 节又试了 0.001 和 0.003。`gate_temperature` 默认 1，除 logits 再做 softmax 或 sigmoid；第 7 节的 `res_temp2` 用的是 2。6 token 的分组在 `benchmarks/rankmixer/configs/sweep/`。T=6 随机组和顺序组在 `benchmarks/rankmixer/configs/rigor/`，划分种子 42。`loss_weight: EQ` 是不归一的两份 BCE 之和。`NORM` 或一列浮点权重可以换组合方式，默认训练不走这两条。
 
 层实现在 `fuxictr/pytorch/layers/interactions/rankmixer.py`。单任务模型在 `model_zoo/RankMixer/`，多任务在 `model_zoo/multitask/MT_RankMixer/`。
 
 ## 附录 A. CPU 自测日志
 
-下面是 2026-10-04 在 CPU 上、tiny 数据、各 1 个 epoch 的原始日志。tiny 集大约 100 条，AUC 不能当效果。当时单元测试 14 个，`Ran 14 tests in 0.952s`，`OK`。当前 `tests/unit_tests/models/test_rankmixer.py` 有 20 个测试，覆盖共享池化、残差 λ、熵正则和日志解析。`tests/test_torch.sh` 仍会在缺失的 `model_zoo/DCNv3` 处停住，这是改 RankMixer 之前就有的问题。
+下面是 2026-10-04 在 CPU 上、tiny 数据、各 1 个 epoch 的原始日志。tiny 集大约 100 条，AUC 不能当效果。当时单元测试 14 个，`Ran 14 tests in 0.952s`，`OK`。当前 `tests/unit_tests/models/test_rankmixer.py` 有 26 个测试。原来的门控、共享池化、残差 λ、熵正则和日志解析还在，另外覆盖了验证集 stage、随机分组种子、多种子门控汇总、汇总脚本跳过 `gate_*.log`，以及 EQ / NORM 损失钩子。本地 `python -m unittest tests.unit_tests.models.test_rankmixer` 是 `Ran 26 tests`，`OK`。`tests/test_torch.sh` 仍会在缺失的 `model_zoo/DCNv3` 处停住，这是改 RankMixer 之前就有的问题。
 
 ```
 ========== RankMixer_test ==========
@@ -366,8 +439,14 @@ Train loss: 0.590076
 | `benchmarks/rankmixer/run_gpu_benchmark.sh` | 已经跑完的 1 epoch 对照 |
 | `benchmarks/rankmixer/run_multiseed.sh` | 3 模型 × 3 种子，early stopping |
 | `benchmarks/rankmixer/run_anticollapse.sh` | 残差门控与熵正则，各 3 个种子 |
-| `benchmarks/rankmixer/run_sweep.sh` | 7 个变体 × 3 个种子，含 6 token 切分 |
+| `benchmarks/rankmixer/run_sweep.sh` | 开发期 7 变体 × 3 种子。门控分析显式 `--stage test` |
 | `benchmarks/rankmixer/configs/sweep/` | 扫描模板。6 token expid 是 `MTR_sw_g6_{mean,gate,residual}` |
-| `benchmarks/rankmixer/analyze_gates.py` | 门控均值、熵、λ 和 png |
+| `benchmarks/rankmixer/configs/rigor/` | 验证集协议。含 `g6_random`（种子 42）和 `g6_sequential` |
+| `benchmarks/rankmixer/run_rigor_suite.sh` | 训练（`--skip_test`）→ 验证集门控 → 汇总。不读 test |
+| `benchmarks/rankmixer/run_final_test.sh` | 设计冻结后才读一次 test |
+| `benchmarks/rankmixer/analyze_gates.py` | `--stage {valid,test}`，默认 valid。门控均值、熵、λ、png、json |
+| `benchmarks/rankmixer/aggregate_gates.py` | 多种子门控均值 ± 样本标准差 |
+| `benchmarks/rankmixer/audit_trunk_grads.py` | `\|\|∇_trunk L_click\|\|` 与 `\|\|∇_trunk L_conv\|\|` |
+| `benchmarks/rankmixer/field_groups.py` | T=6 顺序切分和种子 42 的随机切分 |
 | `benchmarks/rankmixer/results/` | 多种子、防塌缩和扫描的原始表、门控分析、汇总 csv |
 | `docs/img/rankmixer/` | 门控权重图，含 6 token 的 g6_gate / g6_residual |

@@ -12,7 +12,9 @@
 # feature_map.json.
 #
 # After training, seed 2025 of each variant is scored with analyze_gates.py
-# on up to 500000 test rows. The script then writes ALL_DONE.
+# on up to 500000 test rows (--stage test). That reproduces the development
+# study. It is not the selection protocol. New runs use run_rigor_suite.sh,
+# which stays on validation. The script then writes ALL_DONE.
 #
 # Usage, repo at /root/autodl-tmp/FuxiCTR:
 #   bash /root/autodl-tmp/FuxiCTR/benchmarks/rankmixer/run_anticollapse.sh 0
@@ -96,6 +98,7 @@ for spec in "${JOBS[@]}"; do
     fi
     timeout --signal=TERM --kill-after=60s "$TIMEOUT" \
         "$PY" "$ROOT/benchmarks/rankmixer/analyze_gates.py" --gpu "$GPU" \
+        --stage test \
         --checkpoint "$ckpt" \
         --config "$OUT/configs/${expid}" \
         --expid "$expid" \
