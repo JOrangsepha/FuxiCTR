@@ -196,13 +196,30 @@ No mean-AUC paired comparison reaches p<0.1 (df=4). The smallest is g6_gate − 
 
 `g6_gate` conversion puts weight 0.96–0.99 on one token in every seed (entropy 0.121305 ± 0.050015). The token changes with the seed: item_id (2025, 0.976), item_attr (2026, 0.982), user_profile (2027, 0.961), item_attr (2028, 0.984), user_profile (2029, 0.991). Residual pooling raises conversion-gate entropy to 0.699623 ± 0.467691; seeds 2027 and 2029 still exceed 0.9 on user_profile (0.920 and 0.988). Learnable λ stays near its 0.5 init: click 0.506983 ± 0.003786, conversion 0.499401 ± 0.004778.
 
-Gradient audit, one `g6_mean` seed-2025 checkpoint, 4 validation batches, weights not updated: mean trunk L2 click 4.313689e-02, conversion 4.029779e-03, ratio 10.7045. Under EQ, click drives the trunk about 10.7× harder than conversion. `NORM` was not used. 34 of 35 runs peak at epoch 1; PLE seed 2026 peaks at epoch 2 (mean AUC 0.61730, 916 s). Every RankMixer variant’s mean AUC sits above PLE. Paired mean-AUC p-values versus PLE are 0.142 (g6_gate), 0.173 (g6_residual), 0.293 (g6_mean), 0.229 (g3_mean). There is no paired row for g6_random or g6_sequential versus PLE.
+Gradient audit, one `g6_mean` seed-2025 checkpoint, 4 validation batches, weights not updated: mean trunk L2 click 4.313689e-02, conversion 4.029779e-03, ratio 10.7045. Under EQ, click drives the trunk about 10.7× harder than conversion. 34 of 35 runs peak at epoch 1; PLE seed 2026 peaks at epoch 2 (mean AUC 0.61730, 916 s). Against this untuned PLE, RankMixer mean AUCs sit higher, and the paired mean-AUC p-values are 0.142 (g6_gate), 0.173 (g6_residual), 0.293 (g6_mean), 0.229 (g3_mean). Section 9 retunes PLE and withdraws that comparison.
 
-Seed-2025 validation figures (not a 5-seed mean): `docs/img/rankmixer/rigor_valid_g6_gate_s2025.png`, `docs/img/rankmixer/rigor_valid_g6_residual_s2025.png`. Final-test numbers are pending. The frozen set is all 7 variants, with no further selection.
+Seed-2025 validation figures (not a 5-seed mean): `docs/img/rankmixer/rigor_valid_g6_gate_s2025.png`, `docs/img/rankmixer/rigor_valid_g6_residual_s2025.png`. This suite itself did not read test. The one-time test is section 9.
 
 ```bash
 # Already run (seeds 2025–2029, test unread). OUT defaults to /root/autodl-tmp/rg_out.
-SEEDS="2025 2026 2027 2028 2029" bash /root/autodl-tmp/FuxiCTR/benchmarks/rankmixer/run_rigor_suite.sh 0
-# Once, after freeze, all 7 variants, no further selection:
-OUT=/root/autodl-tmp/rg_out bash /root/autodl-tmp/FuxiCTR/benchmarks/rankmixer/run_final_test.sh 0
+SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
+```
+
+## 9. Follow-up and the one-time final test (recorded)
+
+`run_followup.sh` trains with `--skip_test`, selects the PLE config on validation seeds 2025–2027, evaluates clicked-only CVR, then reads test once on the pre-registered set in `results/followup/FROZEN_SET.txt` (55 checkpoints). A `FINAL_TEST_DONE` marker blocks a second read. `OUT` and `RG_OUT` set the output directories. Source of truth: `results/followup/followup_results.md`.
+
+Per-batch `NORM` was started and stopped. Two g6_mean runs, epoch-1 validation: train loss 1.843 and 1.842 (a nonzero-loss NORM objective is 2.0), impression-level conversion AUC 0.5007 and 0.5327, against EQ 0.6445 and 0.6356 on the same seeds. About 16–17% of 8192-row batches have no conversion, and `1/L` blows the conversion gradient up. The recorded loss-weight runs are constant `W[1,10]`. Validation paired mean AUC versus EQ: g6_mean −0.00013 ± 0.00366 (p=0.942), g6_gate +0.00041 ± 0.00647 (p=0.893), g6_residual +0.00098 ± 0.00189 (p=0.312). A 16-batch trunk audit gives EQ ratio 9.659 and `W[1,10]` effective ratio 1.026. Gradients balance. AUC does not move. `loss_weight: NORM_FLOOR` exists in code and was not run.
+
+PLE tuning used the same data, embedding 16, batch 8192, Adam, epochs ≤ 10, patience 3, and zero regularization. Non-embedding params: g6_mean 133218, PLE baseline 336076, PLE wide 714060, embedding 20401936 for all of them. Three single-change configs × seeds 2025–2027, plus the baseline. Selected config: `PLE_fu_lr5e4` (learning rate 5e-4; 3-seed mean AUC 0.62963 ± 0.00211). With seeds 2028–2029: validation mean AUC 0.62959 ± 0.00188. That ties the best MT-RankMixer rows. The section 8 “above PLE” statement is withdrawn.
+
+Clicked-only CVR AUC ranks `click=1` rows by the conversion head. `p_conv/p_click` ranks the same rows by the ratio. Validation, 836258 clicked rows and 4665 conversions in them: g6_gate EQ 0.62300 ± 0.00729 (ratio 0.67100 ± 0.00677); tuned PLE 0.61961 ± 0.00256 (ratio 0.67554 ± 0.00600). The full table is section 4 of the archived report.
+
+Final test, no selection. Pre-registered pairs, all n=5: g6_residual `W[1,10]` − EQ mean AUC +0.00129 ± 0.00111, 4/5, p=0.061; g6_mean EQ − tuned PLE mean AUC −0.00132 ± 0.00493, p=0.581, clicked-only CVR −0.01404 ± 0.01183, p=0.057; g6_mean − g3_mean EQ mean AUC +0.00228 ± 0.00408, p=0.279. Nothing in that pre-registered table has p<0.05. Tuned PLE test mean AUC is 0.62731 ± 0.00180; g6_gate `W[1,10]` is 0.62898 ± 0.00443. `followup_results.md` has no per-seed gate table for `W[1,10]`, so this file does not add token weights. The EQ collapse in section 8 remains the measured one.
+
+```bash
+# Recorded launch. Set NORM_SET to the w10 templates before phase A2.
+# echo "MTR_fu_g6_mean_w10 MTR_fu_g6_gate_w10 MTR_fu_g6_residual_w10" > "$OUT/NORM_SET"
+OUT=/root/autodl-tmp/fu_out RG_OUT=/root/autodl-tmp/rg_out \
+  bash benchmarks/rankmixer/run_followup.sh 0
 ```

@@ -228,6 +228,21 @@ def _load_trained(repo_root, args):
     return model, params, feature_map
 
 
+def ensure_trainable(model, params):
+    """Give ``train_step`` the optimizer and clip budget that ``fit`` normally sets.
+
+    ``--train_steps`` used to call ``train_step`` on a freshly built model.
+    ``compile`` is what creates ``optimizer`` (and, on ``MultiTaskModel``, the
+    per-task loss list). ``_max_gradient_norm`` is set inside ``fit``, so a
+    call before ``fit`` raised ``AttributeError``.
+    """
+    if not hasattr(model, "optimizer"):
+        model.compile(params["optimizer"], params["loss"], params["learning_rate"])
+    if getattr(model, "_max_gradient_norm", None) in (None, 0):
+        model._max_gradient_norm = float(params.get("max_gradient_norm", 10.0))
+    return model
+
+
 def main():
     repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description="Audit per-task trunk gradient norms.")
@@ -268,6 +283,7 @@ def main():
         import exp_loader
         if args.train_steps > 0:
             from fuxictr.pytorch.dataloaders import RankDataLoader
+            ensure_trainable(model, params)
             train_gen, _valid_gen = RankDataLoader(feature_map, stage="train", **params)
             model.train()
             taken = 0

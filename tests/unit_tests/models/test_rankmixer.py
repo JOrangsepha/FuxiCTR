@@ -655,6 +655,76 @@ Skipping test evaluation. The test split stays unread until the design is frozen
         self.assertIn("click", text)
         self.assertIn("conversion", text)
 
+    def test_clicked_only_cvr_auc_uses_clicked_rows_only(self):
+        import numpy as np
+        cvr = self._load("eval_cvr_clicked_unit", "benchmarks/rankmixer/eval_cvr_clicked.py")
+        click = np.array([1, 1, 1, 0, 0, 1], dtype=np.float64)
+        conv = np.array([1, 0, 1, 0, 1, 0], dtype=np.float64)
+        p_click = np.array([0.3, 0.9, 0.95, 0.4, 0.2, 0.2], dtype=np.float64)
+        p_conv = np.array([0.9, 0.8, 0.2, 0.1, 0.7, 0.1], dtype=np.float64)
+        metrics = cvr.compute_metrics(click, conv, p_click, p_conv)
+        self.assertEqual(metrics["n"], 6)
+        self.assertEqual(metrics["n_click"], 4)
+        self.assertEqual(metrics["n_conv"], 3)
+        self.assertEqual(metrics["n_conv_in_clicked"], 2)
+        self.assertEqual(metrics["n_conv_without_click"], 1)
+        from sklearn.metrics import roc_auc_score
+        clicked = click > 0.5
+        self.assertAlmostEqual(
+            metrics["cvr_clicked_auc"],
+            float(roc_auc_score(conv[clicked], p_conv[clicked])))
+        ratio = p_conv[clicked] / np.clip(p_click[clicked], 1e-12, None)
+        self.assertAlmostEqual(
+            metrics["cvr_clicked_auc_ratio"],
+            float(roc_auc_score(conv[clicked], ratio)))
+        self.assertNotAlmostEqual(metrics["cvr_clicked_auc"], metrics["cvr_clicked_auc_ratio"])
+        self.assertNotAlmostEqual(metrics["conv_auc"], metrics["cvr_clicked_auc"])
+
+    def test_norm_empty_conversion_batch_blows_up_and_floor_does_not(self):
+        from fuxictr.pytorch.models.multitask_model import (
+            NORM_FLOOR_EXPERIMENTALLY_EVALUATED,
+            NORM_FLOOR_MIN,
+            combine_task_losses,
+        )
+        self.assertFalse(NORM_FLOOR_EXPERIMENTALLY_EVALUATED)
+        click = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
+        # Exact-zero conversion BCE: an empty batch whose predictions underflowed.
+        conversion = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
+        combine_task_losses([click, conversion], "NORM").backward()
+        self.assertAlmostEqual(float(conversion.grad), 1e12, places=3)
+        self.assertAlmostEqual(float(click.grad), 1.0 / 0.16, places=6)
+        click_f = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
+        conv_f = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
+        combine_task_losses([click_f, conv_f], "NORM_FLOOR").backward()
+        self.assertAlmostEqual(float(conv_f.grad), 1.0 / NORM_FLOOR_MIN, places=6)
+        self.assertLess(float(conv_f.grad), float(conversion.grad))
+        # Tiny but nonzero loss, the mean(p) regime in the collapse note.
+        click_t = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
+        conv_t = torch.tensor(1e-6, dtype=torch.float64, requires_grad=True)
+        combine_task_losses([click_t, conv_t], "NORM").backward()
+        self.assertAlmostEqual(float(conv_t.grad), 1e6, places=3)
+
+    def test_train_steps_compiles_before_train_step(self):
+        audit = self._load("audit_trunk_grads_train_unit", "benchmarks/rankmixer/audit_trunk_grads.py")
+        model = TestModels()._mt_model()
+        batch = {
+            "user_id": torch.randint(1, 10, (4,)),
+            "age": torch.randint(1, 5, (4,)),
+            "item_id": torch.randint(1, 12, (4,)),
+            "price": torch.randn(4),
+            "click": torch.randint(0, 2, (4, 1)).float(),
+            "conversion": torch.zeros(4, 1),
+        }
+        with self.assertRaises(AttributeError):
+            model.train_step(batch)
+        audit.ensure_trainable(model, {
+            "optimizer": "adam",
+            "loss": ["binary_crossentropy", "binary_crossentropy"],
+            "learning_rate": 1e-3,
+        })
+        loss = model.train_step(batch)
+        self.assertTrue(math_isfinite(float(loss.detach())))
+
 
 def math_isfinite(value):
     return value == value and abs(value) != float("inf")

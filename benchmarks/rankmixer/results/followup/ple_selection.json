@@ -1,0 +1,50 @@
+{
+  "best": "PLE_fu_lr5e4",
+  "rule": "max mean valid avg AUC over seeds 2025,2026,2027 (validation only)",
+  "table": [
+    {
+      "stem": "PLE_rg",
+      "desc": "baseline: experts [128,64], lr 1e-3, dropout 0",
+      "n": 3,
+      "mean_valid_avg_auc": 0.6241148333333334,
+      "values": [
+        0.6275625,
+        0.6173035,
+        0.6274785
+      ]
+    },
+    {
+      "stem": "PLE_fu_wide",
+      "desc": "experts [256,128]",
+      "n": 3,
+      "mean_valid_avg_auc": 0.6267006666666667,
+      "values": [
+        0.624472,
+        0.62566,
+        0.6299699999999999
+      ]
+    },
+    {
+      "stem": "PLE_fu_lr5e4",
+      "desc": "lr 5e-4",
+      "n": 3,
+      "mean_valid_avg_auc": 0.6296276666666667,
+      "values": [
+        0.6271885,
+        0.6307465,
+        0.6309480000000001
+      ]
+    },
+    {
+      "stem": "PLE_fu_drop01",
+      "desc": "dropout 0.1",
+      "n": 3,
+      "mean_valid_avg_auc": 0.627762,
+      "values": [
+        0.627992,
+        0.6269965,
+        0.6282975
+      ]
+    }
+  ]
+}
