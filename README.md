@@ -1,36 +1,45 @@
-# 本 Fork 的贡献：RankMixer + MT-RankMixer
+# 本 Fork 的贡献：RankMixer 复现，以及一次没有站住的增益
 
-这是我在 FuxiCTR 上做的多任务排序扩展和诊断，不是「已经打过基线 X%」的新模型。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我自己的部分是 **MT-RankMixer**：任务门控、塌缩诊断、残差池化，以及把语义 token 从 3 个拆到 6 个。下面的 Ali-CCP 表是**开发期研究**：当时用 test 做了门控诊断和结构选择。新的协议是训练后只在验证集上分析和选择，设计冻结之后才读一次 test。验证集上的 T=6 对照还没跑，表里的空位是 pending GPU run，我没有填新数字。
+这是我在 FuxiCTR 上做的诊断。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025）的复现。我加上的是 **MT-RankMixer**：每个任务自己的 token 门控，以及残差池化
 
-*This fork reproduces RankMixer and adds MT-RankMixer. The Ali-CCP tables below are a development study: the test split was used for diagnosis and selection. A validation-first rerun is set up and has not been executed, so no new scores are filled in.*
+\[
+h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t.
+\]
 
-转化这一列是曝光上的 conversion，和 click 一样定义在整条曝光上。它不是「只在 click=1 里算的 CVR」。除非另做点击条件 CVR，下文都叫曝光级联合转化。
+下面这张表是 2026-10-07 在 AutoDL 上跑完的验证集研究。驱动是 `run_rigor_suite.sh`，`SEEDS=2025..2029`，`PARALLEL=2`。7 个变体 × 5 个种子，35 次全部 exit 0。训练带 `--skip_test`，门控分析在验证集。test 没有被读。最终 test 还没跑，见文末。
 
-**到目前为止能说的**
+指标是 click，以及曝光级联合转化（和 click 一样，定义在整条曝光上）。平均 AUC 是两者的算术平均。表内是 5 个种子的均值 ± 样本标准差，按平均 AUC 从高到低。原始表、逐次结果、配对检验、门控汇总和梯度审计在 `benchmarks/rankmixer/results/rigor/`。
 
-1. **Per-task token gating。** 点击和转化可以各自对 token 做门控，也可以退回共享 mean。残差池化是 \(h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t\)。
-2. **种子 2025 上看到过门控塌缩，多种子验证集汇总还没有。** 开发期里，种子 2025 的 test 切片上，3 token 转化门约 0.971 落在商品 token；6 token 原门控的转化头约 0.966 落在商品 ID。这是一个种子，不是 2025/2026/2027 的均值 ± 标准差。多种子门控要在验证集上重算，结果 pending GPU run。
-3. **同一种 6 token 切分下，残差和共享 mean 在开发期 test 上打平**（约 +0.0004）。残差留下的是可解释的门，不是已经确认的 AUC 提升。
-4. **3 token 到 6 token 的约 +0.0019 还不能写成语义分解的收益。** 那次改动同时换了分组、Per-token FFN 个数和 mixing 的头宽。T=6 的随机切分和顺序切分还没在验证集上跑完。
+**Ali-CCP 验证集，5 种子（2025–2029）**
 
-**Ali-CCP 开发期 test 平均 AUC**（3 种子，均值 ± 样本标准差；当时用 test 做了选择；PaddleRec 公开镜像）
+| 变体 | click AUC | 曝光级转化 AUC | 平均 AUC |
+| --- | --- | --- | ---: |
+| g6_gate | 0.61886 ± 0.00142 | 0.64139 ± 0.00589 | 0.63013 ± 0.00346 |
+| g6_random | 0.61936 ± 0.00224 | 0.63956 ± 0.00502 | 0.62946 ± 0.00303 |
+| g6_residual | 0.62009 ± 0.00126 | 0.63829 ± 0.00393 | 0.62919 ± 0.00228 |
+| g6_mean | 0.61960 ± 0.00149 | 0.63589 ± 0.00568 | 0.62775 ± 0.00348 |
+| g3_mean | 0.61790 ± 0.00114 | 0.63615 ± 0.00237 | 0.62702 ± 0.00154 |
+| g6_sequential | 0.61991 ± 0.00225 | 0.63352 ± 0.00503 | 0.62672 ± 0.00211 |
+| PLE | 0.61823 ± 0.00274 | 0.63136 ± 0.00651 | 0.62480 ± 0.00441 |
 
-| 模型 | 曝光级转化 AUC | 平均 AUC |
-| --- | --- | ---: |
-| g6_residual（6 token） | 0.63468 ± 0.00680 | 0.62724 ± 0.00359 |
-| g6_mean（6 token） | 0.63473 ± 0.00327 | 0.62687 ± 0.00208 |
-| g6_gate（6 token） | 0.63442 ± 0.00177 | 0.62635 ± 0.00283 |
-| 共享 mean（3 token） | 0.63168 ± 0.00224 | 0.62496 ± 0.00240 |
-| res_ent0001（3 token） | 0.63132 ± 0.00068 | 0.62488 ± 0.00044 |
-| 残差门控（3 token） | 0.63080 ± 0.00328 | 0.62447 ± 0.00150 |
-| PLE | 0.62605 ± 0.00630 | 0.62300 ± 0.00333 |
-| 原 per-task gating（3 token） | 0.62734 ± 0.00416 | 0.62284 ± 0.00230 |
+变体之间分不开。平均 AUC 的跨度是 0.62480 到 0.63013，变体内标准差是 0.00154 到 0.00441，同一量级。平均 AUC 的配对 t 检验（同一种子，df=4，n=5）里，最小的 p 是 g6_gate − PLE 的 0.142（+0.00533 ± 0.00653，5/5，t=+1.83）。有三行单指标的 p 低于 0.1。n=5，功效低，我没有把它写成显著分离：g6_sequential − g3_mean 的 click，p=0.080；g6_gate − PLE 的曝光级转化，p=0.077；g3_mean − PLE 的曝光级转化，p=0.095。归档稿 `rigor_results.md` 里有一句「没有任何比较达到 p<0.1」，和它自己的表不一致。以表为准。
 
-新协议下的验证集结果（`g3_mean`、`g6_mean`、`g6_residual`、`g6_gate`、`g6_random`、`g6_sequential`、PLE；种子 2025/2026/2027，可扩到 2028/2029）：pending GPU run。
+更细的语义切分没有复现成主要增益。g6_mean 相对 g3_mean 的平均 AUC 是 +0.00072 ± 0.00379（3/5，t=+0.43，p=0.692）。随机 6 组 `g6_random` 的平均 AUC 是 0.62946 ± 0.00303，不低于语义 6 组 `g6_mean` 的 0.62775 ± 0.00348（g6_mean − g6_random 为 −0.00171 ± 0.00502，2/5，p=0.488）。开发期用 test 做选择时写下的表，只留在 [技术报告](docs/RankMixer_tech_report.md) 第 2–7 节，标明是已被这次验证集研究取代的、test 参与了选择的开发期研究。语义组的大小是 1、8、1、3、4、1，随机组和顺序组是每组 3 个字段，投影宽度没有对齐。即便如此，语义切分也没有高于随机切分。
 
-![6 token 原门控，种子 2025 的 test 切片：转化约 0.966 在商品 ID。多种子验证集汇总 pending。](docs/img/rankmixer/gate_g6_gate_s2025.png)
+*Validation-first, five seeds, test unread. No variant separates from seed noise on mean AUC. The finer-semantic-token claim did not replicate: g6_mean versus g3_mean is +0.00072 (p=0.692), and the random 6-way split scores at least as high as the semantic split.*
 
-![6 token 残差门控，种子 2025：点击偏用户 ID，转化偏用户画像，λ 约 0.5。多种子验证集汇总 pending。](docs/img/rankmixer/gate_g6_residual_s2025.png)
+**这次实际做成的事**
+
+1. **复现和扩展。** RankMixer 骨干，加上 MT-RankMixer：按任务的 token 门控，以及上面的残差池化。
+2. **证伪。** 单种子和 test 扫描上看起来的增益，在多种子、验证集优先、并加上 T=6 的随机切分和顺序切分之后，没有从种子噪声里分出来。
+3. **门控塌缩是稳的，塌到哪一个 token 不稳。** `g6_gate` 的转化门在 5 个种子上都把 0.96–0.99 的权重放在一个 token 上，熵 0.121305 ± 0.050015。那个 token 随种子变：2025 是 item_id（0.976），2026 是 item_attr（0.982），2027 是 user_profile（0.961），2028 是 item_attr（0.984），2029 是 user_profile（0.991）。我把它读成优化不稳定，而不是学到了稳定的业务语义。残差池化把转化门熵抬到 0.699623 ± 0.467691，但种子 2027（user_profile 0.920）和 2029（user_profile 0.988）仍然超过 0.9。可学习的 λ 停在初始化附近：click 0.506983 ± 0.003786，曝光级转化 0.499401 ± 0.004778。
+4. **梯度审计。** EQ（两份二元交叉熵直接相加，不按任务归一）下，点击任务的 trunk 梯度大约是转化任务的 10.7 倍。对象是一个 `g6_mean`、种子 2025 的 checkpoint，验证集 4 个 batch，权重没有更新：click 主干 L2 均值 4.313689e-02，转化 4.029779e-03，比值 10.7045。这是我把损失归一（NORM）列为下一个实验的理由。这轮没有跑 NORM。
+
+35 次里 34 次的最佳验证点在 epoch 1，尽管 `early_stop_patience: 3`。例外是 PLE 种子 2026，最佳 epoch 2，平均 AUC 0.61730，训练 916 秒。六个 RankMixer 变体的平均 AUC 都高于 PLE。已经做过的配对里，g6_gate、g6_residual、g6_mean、g3_mean 相对 PLE 的平均 AUC p 值是 0.142、0.173、0.293、0.229。方向一致，n=5 下不显著。`g6_random` 和 `g6_sequential` 对 PLE 没有配对行，我不补 p 值。
+
+![验证集，种子 2025，g6_gate，slice=all。点击：scenario 0.432、user_id 0.309，熵 1.143。转化：item_id 0.976，熵 0.140。这一张只是种子 2025，不是 5 个种子的平均。](docs/img/rankmixer/rigor_valid_g6_gate_s2025.png)
+
+![验证集，种子 2025，g6_residual，slice=all。点击：user_id 0.673、cross 0.139，熵 0.815。转化：user_profile 0.536、item_attr 0.227，熵 1.224。这一张只是种子 2025。](docs/img/rankmixer/rigor_valid_g6_residual_s2025.png)
 
 **Criteo_x1 test**（1 epoch、单种子 2025，没有做多种子）
 
@@ -67,10 +76,10 @@ bash benchmarks/rankmixer/run_gpu_benchmark.sh 0
 bash benchmarks/rankmixer/run_multiseed.sh 0
 bash benchmarks/rankmixer/run_anticollapse.sh 0
 bash benchmarks/rankmixer/run_sweep.sh 0
-# 新协议：验证集上训练、分析和选择。不读 test。
-bash benchmarks/rankmixer/run_rigor_suite.sh 0
-# 五个种子：SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
-# 设计冻结之后才读一次 test：bash benchmarks/rankmixer/run_final_test.sh 0
+# 验证集研究已经跑完（种子 2025–2029，test 未读）。重跑：
+# SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
+# 最终 test 仍待跑，且只跑一次：7 个变体全部冻结，不再按验证集挑选赢家。
+# OUT=/root/autodl-tmp/rg_out bash benchmarks/rankmixer/run_final_test.sh 0
 ```
 
 ---
