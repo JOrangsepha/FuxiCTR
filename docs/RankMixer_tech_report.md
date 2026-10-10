@@ -2,7 +2,7 @@
 
 这篇笔记记的是我在 FuxiCTR 里做的多任务排序扩展和诊断。顺序是：协议，然后是已经跑完的验证集研究，再往后才是开发期的假设、单种子、多种子复核、门控塌缩、残差门控和细粒度 token 扫描。骨干是字节跳动 RankMixer（Zhu 等，CIKM 2025，arXiv:2507.15551）。我自己的部分是 MT-RankMixer。
 
-第 2–7 节是开发期研究：当时用 test 做了诊断和选择。那些表保留，但它们回答的是开发过程里我看到了什么。2026-10-07 的验证集研究取代它们，作为当时的选择依据。后面的「后续实验」又做了三件事：把 PLE 在验证集上调公平、用固定权重代替按 batch 的 NORM、在点击行上补 clicked-only CVR，然后对预注册的 55 个 checkpoint 读了一次 test。那一次 test 不参与选择。
+第 2–7 节是开发期研究：当时用 test 做了诊断和选择。那些表保留，但它们回答的是开发过程里我看到了什么。2026-10-07 的验证集研究取代它们，作为当时的选择依据。后面的「后续实验」又做了三件事：把 PLE 在验证集上调公平、用固定权重代替按 batch 的 NORM、在点击行上补 clicked-only CVR，然后对预注册的 55 个 checkpoint 读了一次 test。那一次 test 不参与选择。2026-10-10 另有一轮只看验证集的转化门消融：熵正则和温度。它不读 test，也不改预注册 test 的结论。数字在「转化门塌缩消融」。
 
 三个指标分开写。click AUC 是点击。曝光级转化 AUC 定义在整条曝光上。clicked-only CVR AUC 只在 click=1 的行上用转化头排序。`p_conv/p_click` 是同一批点击行的另一种排序。
 
@@ -45,6 +45,8 @@ Ali-CCP 没有官方验证集。这份数据来自 PaddleRec 公开镜像，预�
 SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
 # 后续实验和一次性 test 已经跑完，见「后续实验」。重跑：
 # OUT=/root/autodl-tmp/fu_out RG_OUT=/root/autodl-tmp/rg_out bash benchmarks/rankmixer/run_followup.sh 0
+# 转化门消融（2026-10-10，验证集，test 未读）：
+# OUT=/root/autodl-tmp/gc_out RG_OUT=/root/autodl-tmp/rg_out bash benchmarks/rankmixer/run_gatecollapse.sh 0
 ```
 
 汇总脚本以前把 `gate_*.log` 当成失败的训练。现在只解析 `run_expid` 的训练日志。已经归档的开发期 csv 没有改，里面那些 `failed` 行仍是旧脚本留下的。
@@ -348,7 +350,7 @@ EQ 验证集上的塌缩仍然是有表的：转化门权重 0.96–0.99，熵 0
 | g6_mean − g3_mean [EQ] | 平均 AUC | +0.00228 ± 0.00408 | 3/5 | +1.25 | 0.279 |
 | g6_mean − g3_mean [EQ] | clicked-only CVR | +0.00007 ± 0.01892 | 2/5 | +0.01 | 0.994 |
 
-没有一行 p<0.05。调公平之后，MT-RankMixer 和 PLE 大致打平。门控和重加权给的是小的、不显著的差。转化门塌缩没有解开。
+没有一行 p<0.05。调公平之后，MT-RankMixer 和 PLE 大致打平。门控和重加权给的是小的、不显著的差。转化门塌缩在这套 EQ 和 `W[1,10]` 的 checkpoint 上没有解开。后面的验证集消融才试熵正则和温度。
 
 test 上的 click logloss 和曝光级转化 logloss 在归档稿第 7 节，例如 g6_mean EQ 是 0.16170 ± 0.00013 和 0.00204 ± 0.00007，调过的 PLE 是 0.16202 ± 0.00044 和 0.00203 ± 0.00005。
 
@@ -356,7 +358,7 @@ test 上的 click logloss 和曝光级转化 logloss 在归档稿第 7 节，例
 
 - n=5，df=4，功效低。p=0.057 和 p=0.061 不是显著，也不该被说成「差一点就显著」。
 - Ali-CCP 是采样后的公开镜像，稠密宽度远小于论文里的工业模型。
-- 转化门塌缩还没有可靠的修法。熵正则在开发期把门压平了，同时把选择性抹掉。`NORM_FLOOR` 已在验证集上证实能挡住 plain NORM 的转化训崩，但不解开门控塌缩；该套实验没有读 test。
+- 转化门在 EQ 上仍是 5/5 塌缩。2026-10-10 的验证集消融里，熵正则和温度让七个缓解设置都变成 0/5；温度 T=4 的平均 AUC 代价最小（0.6299 ± 0.0018，Δ=−0.0003，最大权重 0.3152 ± 0.1409），下一档是 β=0.003（0.6290 ± 0.0013，Δ=−0.0012）。强熵把熵压到约 1.79，贴近均匀，平均 AUC 和 clicked-only CVR 掉得更多。开发期 3 token 上 β=0.01 已经把选择性抹掉了；6 token 上这句还在。`NORM_FLOOR` 挡住的是 plain NORM 的转化训崩，不解开门控塌缩。门控消融和 `NORM_FLOOR` 都没有读 test。
 - 上游 reczoo/FuxiCTR 的 PR 还没有开。这份笔记停在本 fork。
 
 ### 怎么重跑
@@ -372,6 +374,40 @@ OUT=/root/autodl-tmp/fu_out RG_OUT=/root/autodl-tmp/rg_out \
 
 `OUT`、`RG_OUT`、`PYTHON`、`PARALLEL`、`PHASES` 都可以改。`model_root` 由 `prepare_multiseed_config.py --model-root` 覆盖，不依赖 yaml 里的 AutoDL 绝对路径才能换目录。Phase D 见到 `FINAL_TEST_DONE` 就停止。
 
+## 转化门塌缩消融（2026-10-10，只看验证集）
+
+数字全部来自 `benchmarks/rankmixer/results/gatecollapse/results.md`。我没有另算均值，也没有补这张表里没有的配对检验。协议和 rigor 对齐：`--skip_test`，patience 3，epoch ≤ 10，AliCCP_x1，种子 2025–2029，`loss_weight: EQ`，6 个语义 token。基线是 g6_gate EQ。`REUSE_BASELINE=1` 时，checkpoint、训练日志和门控 JSON 从 rigor 的 `rg_out` 复用，所以基线五行的秒数是 0，不是这一轮重新训完的。曝光级转化 AUC 是 CTCVR；clicked-only CVR 是 `click==1` 行上的转化 AUC。塌缩规则：转化门最大权重 ≥ 0.9，或者最大权重 ≥ 0.85 且熵 ≤ 0.5。
+
+| 变体 | n | click AUC | 曝光级转化 AUC | 平均 AUC | clicked-only CVR | 转化门熵 | 最大权重 | 塌缩 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| g6_gate EQ（基线，复用 rigor） | 5 | 0.6189 ± 0.0014 | 0.6414 ± 0.0059 | 0.6301 ± 0.0035 | 0.6230 ± 0.0073 | 0.1213 ± 0.0500 | 0.9786 ± 0.0112 | 5/5 |
+| gate + 熵 β=0.001 | 5 | 0.6172 ± 0.0031 | 0.6364 ± 0.0029 | 0.6268 ± 0.0016 | 0.6151 ± 0.0050 | 1.7868 ± 0.0016 | 0.1811 ± 0.0076 | 0/5 |
+| gate + 熵 β=0.003 | 5 | 0.6200 ± 0.0008 | 0.6380 ± 0.0024 | 0.6290 ± 0.0013 | 0.6133 ± 0.0105 | 1.7891 ± 0.0011 | 0.1749 ± 0.0065 | 0/5 |
+| gate + 熵 β=0.01 | 5 | 0.6192 ± 0.0012 | 0.6334 ± 0.0033 | 0.6263 ± 0.0016 | 0.6051 ± 0.0052 | 1.7906 ± 0.0006 | 0.1738 ± 0.0027 | 0/5 |
+| gate + 温度 T=2 | 5 | 0.6196 ± 0.0007 | 0.6388 ± 0.0034 | 0.6292 ± 0.0016 | 0.6192 ± 0.0137 | 1.1487 ± 0.3473 | 0.5781 ± 0.1891 | 0/5 |
+| gate + 温度 T=4 | 5 | 0.6196 ± 0.0015 | 0.6401 ± 0.0036 | 0.6299 ± 0.0018 | 0.6147 ± 0.0091 | 1.6334 ± 0.1626 | 0.3152 ± 0.1409 | 0/5 |
+| gate + β=0.01 × T=2 | 5 | 0.6197 ± 0.0007 | 0.6373 ± 0.0044 | 0.6285 ± 0.0025 | 0.6057 ± 0.0053 | 1.7912 ± 0.0004 | 0.1688 ± 0.0012 | 0/5 |
+| residual + 熵 β=0.01 | 5 | 0.6198 ± 0.0013 | 0.6365 ± 0.0016 | 0.6282 ± 0.0013 | 0.6117 ± 0.0102 | 1.7912 ± 0.0002 | 0.1714 ± 0.0026 | 0/5 |
+
+基线 g6_gate EQ 是 5/5 塌缩，最大权重 0.9786 ± 0.0112，熵 0.1213 ± 0.0500，平均 AUC 0.6301 ± 0.0035，clicked-only CVR 0.6230 ± 0.0073。七个缓解设置全部 0/5。归档稿的判定句把七行都标成 mitigated：最大权重均值低于 0.9，熵高于 0.5，平均 AUC 相对基线的下降都没有超过它用来判「毁掉 AUC」的 0.01。
+
+平均 AUC 掉得最少的是温度 T=4。平均 AUC 0.6299 ± 0.0018，判定句 Δ=−0.0003，最大权重 0.3152 ± 0.1409（判定句写成 0.315），熵 1.6334 ± 0.1626，clicked-only CVR 0.6147 ± 0.0091。逐种子最大权重是 0.2367、0.1998、0.2303、0.3717、0.5376。种子 2029 仍到 0.5376，没有一颗过 0.9。这是这张表里 AUC 代价最小的一档。门没有被压成均匀：均匀时每个 token 是 \(1/6\)。
+
+下一档我放熵正则 β=0.003。平均 AUC 0.6290 ± 0.0013，Δ=−0.0012，最大权重 0.1749 ± 0.0065，熵 1.7891 ± 0.0011，clicked-only CVR 0.6133 ± 0.0105。五个种子的最大权重都离开了塌缩，门也比 T=4 更平，平均 AUC 多掉一点。
+
+温度 T=2 的平均 AUC 是 0.6292 ± 0.0016，Δ=−0.0009，clicked-only CVR 0.6192 ± 0.0137，是七行里最接近基线 clicked-only CVR 的。最大权重是 0.5781 ± 0.1891。种子 2028 的最大权重 0.7295、熵 0.8756，种子 2029 是 0.8199、熵 0.7011。按 ≥0.9 的线，表上是 0/5。我不把它和 T=4 放在同一档：有两颗种子还贴在塌缩线下面。
+
+强熵把门压得最平，平均 AUC 和 clicked-only CVR 也掉得更多。β=0.01 的熵是 1.7906 ± 0.0006，平均 AUC 0.6263 ± 0.0016（Δ=−0.0038），clicked-only CVR 0.6051 ± 0.0052，对照基线的 0.6230 ± 0.0073。β=0.01 × T=2 的熵是 1.7912 ± 0.0004，平均 AUC 0.6285 ± 0.0025（Δ=−0.0016），clicked-only CVR 0.6057 ± 0.0053。residual + β=0.01 的熵是 1.7912 ± 0.0002，平均 AUC 0.6282 ± 0.0013（Δ=−0.0020），clicked-only CVR 0.6117 ± 0.0102。β=0.001 也接近均匀：熵 1.7868 ± 0.0016，平均 AUC 0.6268 ± 0.0016（Δ=−0.0033），clicked-only CVR 0.6151 ± 0.0050。6 个 token 均匀分布的熵是 \(\ln 6 \approx 1.7918\)。β=0.01 以及两个和它绑在一起的设置已经贴在这个上限上。塌缩判据过了，选择性没有留下来。这和开发期 3 token、β=0.01 把门压到 \(\ln 3\) 附近是同一类过冲，只是 token 数从 3 变成了 6。
+
+`GC_EXTRA` 默认是 0。residual + β=0.003 的模板在配置里，这一轮没有训，归档稿里也没有这一行。我不为它补数字。
+
+这一轮没有读 test。Δ 是判定句里的均值差，不是 p 值。不能拿来改写预注册 test 里「没有 p<0.05」，也不能说公平调过的 PLE 已经被超过。`NORM_FLOOR` 挡住的是损失归一化把转化头训垮，不是这张表里的 token 门。两件事还是分开的。
+
+```bash
+# 已经跑完。基线默认复用 rigor。不读 test。
+OUT=/root/autodl-tmp/gc_out RG_OUT=/root/autodl-tmp/rg_out \
+  bash benchmarks/rankmixer/run_gatecollapse.sh 0
+```
 
 ## 1. 假设
 
@@ -657,7 +693,7 @@ Test，逐次运行：
 - 6 个 token 的逐 token FFN 参数大约是 3 个 token 的两倍。沿用第 9 节的公式 \(2kLTD^2\)，\(k=2, L=2, D=48\) 时，3 token 是 55296，6 token 是 110592。开发期的 +0.0019 里有多少来自「分得更细」，有多少来自「稠密层变宽」，那组实验分不开。验证集对照把 T 对齐了，投影宽度仍没有对齐。
 - 最佳 epoch 大多仍是 1。验证集研究里是 34/35。开发期的 `ent0001` 和 `g6_gate` 各有一个种子停在 epoch 2。更长的训练或更小的学习率还没做。不对称 tower 也没有做。
 
-那四件事里，NORM 试过并且失败了，clicked-only CVR 和一次性 test 已经记在「后续实验」。更多种子和塌缩的修法还没做。最终 test 的数字在那一节，不再是空的。
+那四件事里，NORM 试过并且失败了，clicked-only CVR 和一次性 test 已经记在「后续实验」。转化门的熵正则和温度消融记在「转化门塌缩消融」：验证集上塌缩判据能过，强熵把选择性一起抹掉，而且那一轮没有读 test。最终 test 的数字在后续实验那一节，不再是空的。
 
 ## 9. 方法备忘
 
@@ -673,7 +709,7 @@ Test，逐次运行：
 
 **和 MMoE 的差别。** MMoE 的专家读同一份展平嵌入。这里的 per-token FFN 各看各的 token，任务门控发生在 mixing 之后，对象是 token。
 
-**开关。** `task_pooling: gate` 是默认。`task_pooling: mean` 或 `gate_type: mean` 是共享 mean。`task_pooling: residual` 是第 5 节的混合，不能再同时把 `gate_type` 设成 `mean`。`gate_entropy_reg` 默认 0。第 6 节的对照用 0.01，第 7 节又试了 0.001 和 0.003。`gate_temperature` 默认 1，除 logits 再做 softmax 或 sigmoid；第 7 节的 `res_temp2` 用的是 2。6 token 的分组在 `benchmarks/rankmixer/configs/sweep/`。T=6 随机组和顺序组在 `benchmarks/rankmixer/configs/rigor/`，划分种子 42。`loss_weight: EQ` 是不归一的两份 BCE 之和。`NORM` 或一列浮点权重可以换组合方式，默认训练不走这两条。
+**开关。** `task_pooling: gate` 是默认。`task_pooling: mean` 或 `gate_type: mean` 是共享 mean。`task_pooling: residual` 是第 5 节的混合，不能再同时把 `gate_type` 设成 `mean`。`gate_entropy_reg` 默认 0。第 6 节的对照用 0.01，第 7 节又试了 0.001 和 0.003。`gate_temperature` 默认 1，除 logits 再做 softmax 或 sigmoid；第 7 节的 `res_temp2` 用的是 2。6 token、验证集优先的门控消融在 `benchmarks/rankmixer/configs/gatecollapse/`，β 用了 0.001、0.003、0.01，温度用了 2 和 4，另有 β=0.01 乘 T=2，以及 residual 加 β=0.01。数字在「转化门塌缩消融」。6 token 的分组在 `benchmarks/rankmixer/configs/sweep/`。T=6 随机组和顺序组在 `benchmarks/rankmixer/configs/rigor/`，划分种子 42。`loss_weight: EQ` 是不归一的两份 BCE 之和。`NORM` 或一列浮点权重可以换组合方式，默认训练不走这两条。
 
 层实现在 `fuxictr/pytorch/layers/interactions/rankmixer.py`。单任务模型在 `model_zoo/RankMixer/`，多任务在 `model_zoo/multitask/MT_RankMixer/`。
 
@@ -759,6 +795,10 @@ Train loss: 0.590076
 | `benchmarks/rankmixer/results/` | 开发期多种子、防塌缩和扫描的原始表、门控分析、汇总 csv |
 | `benchmarks/rankmixer/results/rigor/` | 验证集研究：`rigor_results.md`、`rigor_summary.csv`、`grad_audit.md`、`g6_gate_seeds.md`、`g6_residual_seeds.md` |
 | `benchmarks/rankmixer/results/followup/` | 后续实验：`followup_results.md`、`followup_summary.csv`、`grad_audit_norm.md`、`param_counts.csv`、`ple_selection.json`、`FROZEN_SET.txt`、`NORM_collapse_evidence.md` |
+| `benchmarks/rankmixer/results/gatecollapse/` | 转化门消融：`results.md` 是数字来源，`runs.tsv` 是驱动日志。只看验证集 |
+| `benchmarks/rankmixer/run_gatecollapse.sh` | 熵正则、温度、β 与 T 的组合、residual 加熵。`--skip_test`。基线默认可复用 rigor |
+| `benchmarks/rankmixer/gc_report.py` | 把 `gc_out` 的验证集 AUC、clicked-only CVR 和转化门汇总成 `results.md` |
+| `benchmarks/rankmixer/configs/gatecollapse/` | 上面这轮的模板。6 个语义 token，EQ，epoch 上限 10，patience 3 |
 | `benchmarks/rankmixer/run_followup.sh` | PLE 调参、损失权重、clicked-only CVR、一次性 test。`OUT` / `RG_OUT` 可改 |
 | `benchmarks/rankmixer/eval_cvr_clicked.py` | 后验评估。test 需要 `--allow_test` 和 `--guard_dir` |
 | `docs/img/rankmixer/` | 开发期 test 门控图，以及验证集种子 2025 的 `rigor_valid_g6_gate_s2025.png`、`rigor_valid_g6_residual_s2025.png` |
