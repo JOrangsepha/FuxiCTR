@@ -264,7 +264,18 @@ EQ 是两份任务 mean BCE 的直接和，不除以任务数，也不按损失�
 
 ### 损失权重
 
-`NORM` 仍可选。它按 batch 做 `L_k / stopgrad(|L_k|)`。空转化 batch 上转化 BCE 会掉到 0 或 `mean(p)`，梯度乘数变成 `1/L`，最大到 `1e-12` 这个下限的倒数。两次 g6_mean NORM 在 epoch 1 被停掉：训练损失 1.843 和 1.842，验证集曝光级转化 AUC 0.5007 和 0.5327。同一种子 EQ 是 0.6445 和 0.6356。证据在 `NORM_collapse_evidence.md`。代码里另有 `NORM_FLOOR`（分母不低于 1e-2）。`NORM_FLOOR_EXPERIMENTALLY_EVALUATED` 是 False，没有任何实验用过它。
+`NORM` 仍可选。它按 batch 做 `L_k / stopgrad(|L_k|)`。空转化 batch 上转化 BCE 会掉到 0 或 `mean(p)`，梯度乘数变成 `1/L`，最大到 `1e-12` 这个下限的倒数。两次 g6_mean NORM 在 epoch 1 被停掉：训练损失 1.843 和 1.842，验证集曝光级转化 AUC 0.5007 和 0.5327。同一种子 EQ 是 0.6445 和 0.6356。证据在 `NORM_collapse_evidence.md`。
+
+`NORM_FLOOR`（分母 `clamp_min(1e-2)`）已经在真实 Ali-CCP 验证集上评估过（2026-10-10，20/20 exit 0，`--skip_test`，test 未读）。`NORM_FLOOR_EXPERIMENTALLY_EVALUATED` 现为 True。完整表在 `benchmarks/rankmixer/results/normfloor/results.md`。摘要：
+
+| 变体 | n | click AUC | 曝光级转化 AUC | 平均 AUC | clicked-only CVR | 转化 AUC&lt;0.55 |
+| --- | --- | --- | --- | --- | --- | --- |
+| g6_mean [NORM_FLOOR] | 5 | 0.61998 ± 0.00167 | 0.64082 ± 0.00359 | 0.63040 ± 0.00229 | 0.61048 ± 0.01007 | 0/5 |
+| g6_mean [NORM] | 5 | 0.61994 ± 0.00042 | 0.56673 ± 0.03616 | 0.59334 ± 0.01816 | 0.50219 ± 0.06199 | 1/5 |
+| g6_gate [NORM_FLOOR] | 5 | 0.62017 ± 0.00150 | 0.64348 ± 0.00570 | 0.63183 ± 0.00305 | 0.61457 ± 0.00689 | 0/5 |
+| g6_residual [NORM_FLOOR] | 5 | 0.62019 ± 0.00131 | 0.64554 ± 0.00373 | 0.63287 ± 0.00198 | 0.61806 ± 0.00663 | 0/5 |
+
+相对先前 EQ g6_mean（平均 AUC 0.62775 ± 0.00348），g6_residual + NORM_FLOOR 的描述性 Δ 是 +0.00512。这是验证集数字，不是最终 test，也不能据此改写「公平 PLE 打平、预注册 test 无 p&lt;0.05」的结论。梯度审计（同脚本、验证集 16 batch）：NORM 训练出的 checkpoint raw trunk click/conv 比约 4153；NORM_FLOOR 约 9.0；EQ 约 9.7。门控塌缩仍在：g6_gate + NORM_FLOOR 种子 2025 的转化门把约 0.999 压在 item_id（熵约 0.007）。
 
 实际跑完的是固定权重 `W[1,10]`。验证集配对（A − EQ，n=5）的平均 AUC：
 
@@ -345,7 +356,7 @@ test 上的 click logloss 和曝光级转化 logloss 在归档稿第 7 节，例
 
 - n=5，df=4，功效低。p=0.057 和 p=0.061 不是显著，也不该被说成「差一点就显著」。
 - Ali-CCP 是采样后的公开镜像，稠密宽度远小于论文里的工业模型。
-- 转化门塌缩还没有可靠的修法。熵正则在开发期把门压平了，同时把选择性抹掉。`NORM_FLOOR` 没有实验。
+- 转化门塌缩还没有可靠的修法。熵正则在开发期把门压平了，同时把选择性抹掉。`NORM_FLOOR` 已在验证集上证实能挡住 plain NORM 的转化训崩，但不解开门控塌缩；该套实验没有读 test。
 - 上游 reczoo/FuxiCTR 的 PR 还没有开。这份笔记停在本 fork。
 
 ### 怎么重跑

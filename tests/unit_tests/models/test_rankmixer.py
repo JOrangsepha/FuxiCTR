@@ -686,7 +686,7 @@ Skipping test evaluation. The test split stays unread until the design is frozen
             NORM_FLOOR_MIN,
             combine_task_losses,
         )
-        self.assertFalse(NORM_FLOOR_EXPERIMENTALLY_EVALUATED)
+        self.assertTrue(NORM_FLOOR_EXPERIMENTALLY_EVALUATED)
         click = torch.tensor(0.16, dtype=torch.float64, requires_grad=True)
         # Exact-zero conversion BCE: an empty batch whose predictions underflowed.
         conversion = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)

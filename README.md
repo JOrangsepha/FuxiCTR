@@ -10,9 +10,9 @@ h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t.
 
 协议是：训练和选择只看验证集；test 在设计冻结之后读一次。验证集研究（35 次，exit 0）没有读 test。后续实验在同一批 checkpoint 上补了 PLE 调参、固定损失权重 `W[1,10]`、clicked-only CVR，然后对预注册的 55 个 checkpoint 读了一次 test（`FINAL_TEST_DONE` 挡住第二次）。全部任务 exit 0。原始表在 `benchmarks/rankmixer/results/followup/followup_results.md`。
 
-**结论。** 把 PLE 的学习率在验证集上调到 5e-4 之后，它的 5 种子验证集平均 AUC 是 0.62959 ± 0.00188，和最好的 MT-RankMixer 变体打平。我先前写的「RankMixer 变体高于 PLE」针对的是没有调过的 PLE（验证集平均 AUC 0.62480 ± 0.00441），这句收回。门控和 `W[1,10]` 的增益小，预注册的 test 配对里没有一行 p<0.05（n=5）。转化门的塌缩在 EQ 上是稳的，塌到哪个 token 不稳。按 batch 做的 NORM 会把转化头推垮，我没有把它当成可用的训练损失。
+**结论。** 把 PLE 的学习率在验证集上调到 5e-4 之后，它的 5 种子验证集平均 AUC 是 0.62959 ± 0.00188，和最好的 MT-RankMixer 变体打平。我先前写的「RankMixer 变体高于 PLE」针对的是没有调过的 PLE（验证集平均 AUC 0.62480 ± 0.00441），这句收回。门控和 `W[1,10]` 的增益小，预注册的 test 配对里没有一行 p<0.05（n=5）。转化门的塌缩在 EQ 上是稳的，塌到哪个 token 不稳。按 batch 做的 NORM 会把转化头推垮，我没有把它当成可用的训练损失。后来补跑了 ``NORM_FLOOR``（分母 ``clamp_min(1e-2)``）：它能挡住这场训崩，但转化门塌缩还在，而且这一轮只看验证集、没有读 test。
 
-值得留下来的是协议和证伪：验证集优先、冻结后只读一次 test、种子配对、T=6 的随机切分和顺序切分；语义 token 那句主要增益没有复现；基线 PLE 当时欠调；门控塌缩的诊断；NORM 的失败模式和梯度审计。
+值得留下来的是协议和证伪：验证集优先、冻结后只读一次 test、种子配对、T=6 的随机切分和顺序切分；语义 token 那句主要增益没有复现；基线 PLE 当时欠调；门控塌缩的诊断；NORM 的失败模式、``NORM_FLOOR`` 的补丁验证，以及梯度审计。
 
 *Fairly tuned PLE ties MT-RankMixer. Gating and loss reweighting do not separate from seed noise at n=5. Per-batch NORM collapses the conversion head.*
 
@@ -33,6 +33,18 @@ h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t.
 **PLE 是否公平。** 训练预算和 MT-RankMixer 对齐：同一份 Ali-CCP parquet，embedding 16，batch 8192，Adam，epoch 上限 10，patience 3，embedding/net 正则为 0。非嵌入参数：g6_mean 133218，g6_gate 133316，g6_residual 133318，PLE 基线 336076，加宽的 PLE 714060。嵌入参数都是 20401936。调参是 3 个单改动配置 × 种子 2025–2027，加上原来的 PLE 基线，规则是验证集平均 AUC 最大。选中的是 `PLE_fu_lr5e4`（学习率 5e-4，3 种子平均 AUC 0.62963 ± 0.00211）。补上 2028 和 2029 之后，5 种子验证集平均 AUC 是 0.62959 ± 0.00188，click 0.61946 ± 0.00090，曝光级转化 0.63972 ± 0.00427，clicked-only CVR 0.61961 ± 0.00256。它和 g6_gate EQ 的 0.63013 ± 0.00346、g6_residual `W[1,10]` 的 0.63017 ± 0.00115 处在同一档噪声里。
 
 **损失权重。** 按 batch 的 NORM（`L_k / stopgrad(|L_k|)`）在没有转化正样本的 batch 上会把转化梯度乘到大约 `1/L`。8192 行、正样本率约 2.2e-4 时，空转化 batch 大约 16–17%。两次跑了一个 epoch 就停掉的 g6_mean NORM：训练损失 1.843 / 1.842（NORM 在两份损失都非零时应该是 2.0），验证集曝光级转化 AUC 0.5007 / 0.5327。同一种子的 EQ g6_mean 是 0.6445 / 0.6356。我改跑固定权重 `W[1,10]`。验证集上相对 EQ 的配对（n=5）都不显著。平均 AUC：g6_mean −0.00013 ± 0.00366（p=0.942），g6_gate +0.00041 ± 0.00647（p=0.893），g6_residual +0.00098 ± 0.00189（p=0.312）。梯度审计是验证集 16 个 batch、不更新权重：EQ g6_mean 种子 2025 的 raw trunk 比是 9.66（中位数 9.22），在它自己的损失下是 9.659。`W[1,10]` 那个 checkpoint 的 raw 比仍是 10.26，但按它自己的权重折算是 1.026。梯度被拉平了，AUC 没有跟着动。
+
+**NORM_FLOOR（2026-10-10，验证集，test 未读）。** 同一份 Ali-CCP 采样数据、同一协议（`--skip_test`，patience 3，epoch ≤ 10，种子 2025–2029）。20/20 训练 exit 0。`NORM_FLOOR` = 按 batch 的 NORM，但分母 `clamp_min(1e-2)`，乘数最多 100。对照的 plain NORM 仍然把转化拖垮：g6_mean NORM 验证集平均 AUC 0.59334 ± 0.01816，曝光级转化 0.56673 ± 0.03616，clicked-only CVR 0.50219 ± 0.06199，5 个种子里有 1 个转化 AUC < 0.55。`NORM_FLOOR` 五个种子的转化 AUC 都 ≥ 0.60，没有再塌到 ~0.50。
+
+| 变体 | click AUC | 曝光级转化 AUC | 平均 AUC | clicked-only CVR | 转化塌缩 |
+| --- | --- | --- | --- | --- | --- |
+| g6_mean [NORM_FLOOR] | 0.61998 ± 0.00167 | 0.64082 ± 0.00359 | 0.63040 ± 0.00229 | 0.61048 ± 0.01007 | 0/5 |
+| g6_mean [NORM] | 0.61994 ± 0.00042 | 0.56673 ± 0.03616 | 0.59334 ± 0.01816 | 0.50219 ± 0.06199 | 1/5 |
+| g6_gate [NORM_FLOOR] | 0.62017 ± 0.00150 | 0.64348 ± 0.00570 | 0.63183 ± 0.00305 | 0.61457 ± 0.00689 | 0/5 |
+| g6_residual [NORM_FLOOR] | 0.62019 ± 0.00131 | 0.64554 ± 0.00373 | 0.63287 ± 0.00198 | 0.61806 ± 0.00663 | 0/5 |
+| g6_mean [EQ]（先前 rigor） | 0.61960 ± 0.00149 | 0.63589 ± 0.00568 | 0.62775 ± 0.00348 | — | — |
+
+目前验证集上最好的是 g6_residual + NORM_FLOOR，平均 AUC 0.63287 ± 0.00198（相对先前 EQ g6_mean 的描述性 Δ +0.00512）。这不是对公平调参后 PLE 的最终 test 对比：这一轮**没有读 test**，也不能拿来改写先前预注册 test 里「没有 p<0.05」的结论。梯度审计（验证集 16 个 batch）：plain NORM 训练出的 checkpoint 上 raw trunk click/conv 比约 4153（转化头基本死掉）；NORM_FLOOR 约 9.0，和 EQ 的约 9.7 同一量级。门控塌缩**没有**被 NORM_FLOOR 解开：g6_gate + NORM_FLOOR 的转化门仍把约 0.999 压在 item_id 上（熵约 0.007）。原始表和门控 dump 在 `benchmarks/rankmixer/results/normfloor/`。`NORM_FLOOR_EXPERIMENTALLY_EVALUATED` 已改为 True。
 
 **clicked-only CVR（验证集，后验评估）。** 每个变体都是 836258 条点击、其中 4665 条转化。g6_gate EQ 的 clicked-only CVR AUC 是 0.62300 ± 0.00729，`p_conv/p_click` 是 0.67100 ± 0.00677。调过的 PLE 是 0.61961 ± 0.00256 和 0.67554 ± 0.00600。g6_mean EQ 是 0.60434 ± 0.01172 和 0.66313 ± 0.00849。完整列在技术报告和 `followup_results.md` 第 4 节。重放的 click AUC 和训练日志的差，最大是 4.9e-07。
 
@@ -56,7 +68,7 @@ h_k = \lambda_k \,\mathrm{mean}_t(x_t) + (1-\lambda_k)\sum_t \alpha_{k,t} x_t.
 
 预注册配对（test，双侧，df=4）：g6_residual `W[1,10]` − EQ 的平均 AUC +0.00129 ± 0.00111，4/5，t=+2.59，p=0.061。g6_mean EQ − 调过的 PLE，平均 AUC −0.00132 ± 0.00493，1/5，p=0.581；clicked-only CVR −0.01404 ± 0.01183，1/5，p=0.057。g6_mean − g3_mean [EQ] 的平均 AUC +0.00228 ± 0.00408，3/5，p=0.279。这张预注册表里没有 p<0.05。
 
-**局限。** n=5，df=4，功效低。数据是采样后的 Ali-CCP，不是论文里的工业级排序。转化门塌缩还没有解开；`NORM_FLOOR` 只是代码里的分母下限，没有实验。上游 reczoo/FuxiCTR 的 PR 还没有开。
+**局限。** n=5，df=4，功效低。数据是采样后的 Ali-CCP，不是论文里的工业级排序。转化门塌缩还没有解开——`NORM_FLOOR` 修好了 loss 归一化的训崩，但没有修好门控塌缩。`NORM_FLOOR` 这一轮只在验证集上评估，test 未读；不能据此声称已经在最终 test 上超过公平调参的 PLE。上游 reczoo/FuxiCTR 的 PR 还没有开。
 
 **怎么重跑**
 

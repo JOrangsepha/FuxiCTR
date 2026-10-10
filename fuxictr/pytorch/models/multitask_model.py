@@ -26,8 +26,9 @@ from tqdm import tqdm
 from collections import defaultdict
 
 
-# ``NORM_FLOOR`` is a local guard, not a result. No Ali-CCP run used it.
-NORM_FLOOR_EXPERIMENTALLY_EVALUATED = False
+# ``NORM_FLOOR`` was evaluated on Ali-CCP validation (2026-10-10 suite).
+# See ``benchmarks/rankmixer/results/normfloor/results.md``.
+NORM_FLOOR_EXPERIMENTALLY_EVALUATED = True
 NORM_FLOOR_MIN = 1e-2
 
 
@@ -54,7 +55,9 @@ def combine_task_losses(losses, loss_weight="EQ"):
 
     ``NORM_FLOOR`` is the same formula with the denominator clamped to
     ``NORM_FLOOR_MIN`` (1e-2), so the multiplier is at most 100.
-    ``NORM_FLOOR_EXPERIMENTALLY_EVALUATED`` is False. No follow-up job used it.
+    ``NORM_FLOOR_EXPERIMENTALLY_EVALUATED`` is True: the 2026-10-10 Ali-CCP
+    validation suite (20/20 exit 0, test unread) shows it stops the conversion
+    collapse of plain ``NORM``. Gate collapse onto a single token remains.
 
     A sequence of floats is a manual weight vector applied as
     ``sum_k w_k * L_k``. The recorded alternative to per-batch NORM was
@@ -82,7 +85,7 @@ def combine_task_losses(losses, loss_weight="EQ"):
             scale = stacked.detach().abs().clamp_min(1e-12)
             return torch.sum(stacked / scale)
         if mode == "NORM_FLOOR":
-            # NOT experimentally evaluated. See NORM_FLOOR_EXPERIMENTALLY_EVALUATED.
+            # Evaluated on Ali-CCP validation; see NORM_FLOOR_EXPERIMENTALLY_EVALUATED.
             scale = stacked.detach().abs().clamp_min(NORM_FLOOR_MIN)
             return torch.sum(stacked / scale)
         raise ValueError(
@@ -113,8 +116,8 @@ class MultiTaskModel(BaseModel):
         loss_weight (str or list): ``"EQ"`` (unnormalized sum, the default),
             ``"NORM"`` (each loss divided by its detached magnitude; unstable
             when a task loss is ~0), ``"NORM_FLOOR"`` (same idea, denominator
-            clamped at 1e-2, not experimentally evaluated), or a list of
-            per-task weights. Default: ``"EQ"``.
+            clamped at 1e-2; experimentally evaluated on Ali-CCP validation,
+            test unread), or a list of per-task weights. Default: ``"EQ"``.
         gpu (int): GPU device ID, -1 for CPU. Default: ``-1``.
         monitor (str): Metric to monitor for early stopping. Default: ``"AUC"``.
         save_best_only (bool): Whether to save only the best model. Default: ``True``.
