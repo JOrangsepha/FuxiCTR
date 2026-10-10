@@ -209,7 +209,9 @@ SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
 
 `run_followup.sh` trains with `--skip_test`, selects the PLE config on validation seeds 2025–2027, evaluates clicked-only CVR, then reads test once on the pre-registered set in `results/followup/FROZEN_SET.txt` (55 checkpoints). A `FINAL_TEST_DONE` marker blocks a second read. `OUT` and `RG_OUT` set the output directories. Source of truth: `results/followup/followup_results.md`.
 
-Per-batch `NORM` was started and stopped. Two g6_mean runs, epoch-1 validation: train loss 1.843 and 1.842 (a nonzero-loss NORM objective is 2.0), impression-level conversion AUC 0.5007 and 0.5327, against EQ 0.6445 and 0.6356 on the same seeds. About 16–17% of 8192-row batches have no conversion, and `1/L` blows the conversion gradient up. The recorded loss-weight runs are constant `W[1,10]`. Validation paired mean AUC versus EQ: g6_mean −0.00013 ± 0.00366 (p=0.942), g6_gate +0.00041 ± 0.00647 (p=0.893), g6_residual +0.00098 ± 0.00189 (p=0.312). A 16-batch trunk audit gives EQ ratio 9.659 and `W[1,10]` effective ratio 1.026. Gradients balance. AUC does not move. `loss_weight: NORM_FLOOR` exists in code and was not run.
+Per-batch `NORM` was started and stopped. Two g6_mean runs, epoch-1 validation: train loss 1.843 and 1.842 (a nonzero-loss NORM objective is 2.0), impression-level conversion AUC 0.5007 and 0.5327, against EQ 0.6445 and 0.6356 on the same seeds. About 16–17% of 8192-row batches have no conversion, and `1/L` blows the conversion gradient up. The recorded loss-weight runs are constant `W[1,10]`. Validation paired mean AUC versus EQ: g6_mean −0.00013 ± 0.00366 (p=0.942), g6_gate +0.00041 ± 0.00647 (p=0.893), g6_residual +0.00098 ± 0.00189 (p=0.312). A 16-batch trunk audit gives EQ ratio 9.659 and `W[1,10]` effective ratio 1.026. Gradients balance. AUC does not move.
+
+`loss_weight: NORM_FLOOR` (denominator `clamp_min(1e-2)`) was evaluated on Ali-CCP validation on 2026-10-10: 20/20 exit 0, `--skip_test`, test unread. Plain NORM still collapses conversion (g6_mean avg AUC 0.59334 ± 0.01816, clicked-only CVR 0.50219 ± 0.06199, 1/5 with conv AUC < 0.55). NORM_FLOOR keeps conversion AUC ≥ 0.60 on all seeds. Best validation row so far: g6_residual + NORM_FLOOR avg AUC 0.63287 ± 0.00198 (descriptive Δ +0.00512 vs prior EQ g6_mean 0.62775 ± 0.00348). This is not a final-test claim against fair PLE. Grad audit: NORM raw trunk click/conv ≈ 4153; NORM_FLOOR ≈ 9.0; EQ ≈ 9.7. Token-gate collapse remains (g6_gate + NORM_FLOOR conversion gate ≈ 0.999 on item_id, entropy ≈ 0.007). Archive: `results/normfloor/`. `NORM_FLOOR_EXPERIMENTALLY_EVALUATED` is True.
 
 PLE tuning used the same data, embedding 16, batch 8192, Adam, epochs ≤ 10, patience 3, and zero regularization. Non-embedding params: g6_mean 133218, PLE baseline 336076, PLE wide 714060, embedding 20401936 for all of them. Three single-change configs × seeds 2025–2027, plus the baseline. Selected config: `PLE_fu_lr5e4` (learning rate 5e-4; 3-seed mean AUC 0.62963 ± 0.00211). With seeds 2028–2029: validation mean AUC 0.62959 ± 0.00188. That ties the best MT-RankMixer rows. The section 8 “above PLE” statement is withdrawn.
 
@@ -223,3 +225,16 @@ Final test, no selection. Pre-registered pairs, all n=5: g6_residual `W[1,10]` �
 OUT=/root/autodl-tmp/fu_out RG_OUT=/root/autodl-tmp/rg_out \
   bash benchmarks/rankmixer/run_followup.sh 0
 ```
+
+## 10. NORM_FLOOR real-data validation (recorded 2026-10-10)
+
+Validation only. Seeds 2025–2029. patience 3, epochs ≤ 10, AliCCP_x1, `--skip_test`. Templates: `MTR_nf_g6_mean_normfloor`, `MTR_nf_g6_mean_norm`, `MTR_nf_g6_gate_normfloor`, `MTR_nf_g6_residual_normfloor`. Source of truth: `results/normfloor/results.md`.
+
+| variant | click AUC | impression-level conversion AUC | mean AUC | clicked-only CVR | conv&lt;0.55 |
+| --- | --- | --- | --- | --- | --- |
+| g6_mean NORM_FLOOR | 0.61998 ± 0.00167 | 0.64082 ± 0.00359 | 0.63040 ± 0.00229 | 0.61048 ± 0.01007 | 0/5 |
+| g6_mean NORM | 0.61994 ± 0.00042 | 0.56673 ± 0.03616 | 0.59334 ± 0.01816 | 0.50219 ± 0.06199 | 1/5 |
+| g6_gate NORM_FLOOR | 0.62017 ± 0.00150 | 0.64348 ± 0.00570 | 0.63183 ± 0.00305 | 0.61457 ± 0.00689 | 0/5 |
+| g6_residual NORM_FLOOR | 0.62019 ± 0.00131 | 0.64554 ± 0.00373 | 0.63287 ± 0.00198 | 0.61806 ± 0.00663 | 0/5 |
+
+Do not treat the residual + NORM_FLOOR validation lead as a replacement for the pre-registered final test in section 9. That test set was not read here.
