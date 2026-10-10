@@ -2,7 +2,7 @@
 
 Modest 1-epoch comparison, meant to fit in a few GPU-hours on one rented GPU. It is a public-data check of this implementation, not a reproduction of the paper's trillion-scale Douyin experiments.
 
-Ali-CCP tables in sections 5–7 are a test-contaminated development study. The validation-first 5-seed run (2026-10-07, seeds 2025–2029, test unread) is section 8 and `results/rigor/`. That study supersedes sections 5–7 for claims about tokenization, gating, and residual pooling. Conversion there is impression-level joint conversion.
+Ali-CCP tables in sections 5–7 are a test-contaminated development study. The validation-first 5-seed run (2026-10-07, seeds 2025–2029, test unread) is section 8 and `results/rigor/`. That study supersedes sections 5–7 for claims about tokenization, gating, and residual pooling. Conversion there is impression-level joint conversion. Section 11 is the 2026-10-10 validation-only gate-collapse ablation. The write-up there is in Chinese and follows `results/gatecollapse/results.md`.
 
 | Track | Models | Data |
 | --- | --- | --- |
@@ -211,7 +211,7 @@ SEEDS="2025 2026 2027 2028 2029" bash benchmarks/rankmixer/run_rigor_suite.sh 0
 
 Per-batch `NORM` was started and stopped. Two g6_mean runs, epoch-1 validation: train loss 1.843 and 1.842 (a nonzero-loss NORM objective is 2.0), impression-level conversion AUC 0.5007 and 0.5327, against EQ 0.6445 and 0.6356 on the same seeds. About 16–17% of 8192-row batches have no conversion, and `1/L` blows the conversion gradient up. The recorded loss-weight runs are constant `W[1,10]`. Validation paired mean AUC versus EQ: g6_mean −0.00013 ± 0.00366 (p=0.942), g6_gate +0.00041 ± 0.00647 (p=0.893), g6_residual +0.00098 ± 0.00189 (p=0.312). A 16-batch trunk audit gives EQ ratio 9.659 and `W[1,10]` effective ratio 1.026. Gradients balance. AUC does not move.
 
-`loss_weight: NORM_FLOOR` (denominator `clamp_min(1e-2)`) was evaluated on Ali-CCP validation on 2026-10-10: 20/20 exit 0, `--skip_test`, test unread. Plain NORM still collapses conversion (g6_mean avg AUC 0.59334 ± 0.01816, clicked-only CVR 0.50219 ± 0.06199, 1/5 with conv AUC < 0.55). NORM_FLOOR keeps conversion AUC ≥ 0.60 on all seeds. Best validation row so far: g6_residual + NORM_FLOOR avg AUC 0.63287 ± 0.00198 (descriptive Δ +0.00512 vs prior EQ g6_mean 0.62775 ± 0.00348). This is not a final-test claim against fair PLE. Grad audit: NORM raw trunk click/conv ≈ 4153; NORM_FLOOR ≈ 9.0; EQ ≈ 9.7. Token-gate collapse remains (g6_gate + NORM_FLOOR conversion gate ≈ 0.999 on item_id, entropy ≈ 0.007). Archive: `results/normfloor/`. `NORM_FLOOR_EXPERIMENTALLY_EVALUATED` is True.
+`loss_weight: NORM_FLOOR` (denominator `clamp_min(1e-2)`) was evaluated on Ali-CCP validation on 2026-10-10: 20/20 exit 0, `--skip_test`, test unread. Plain NORM still collapses conversion (g6_mean avg AUC 0.59334 ± 0.01816, clicked-only CVR 0.50219 ± 0.06199, 1/5 with conv AUC < 0.55). NORM_FLOOR keeps conversion AUC ≥ 0.60 on all seeds. Best validation row so far: g6_residual + NORM_FLOOR avg AUC 0.63287 ± 0.00198 (descriptive Δ +0.00512 vs prior EQ g6_mean 0.62775 ± 0.00348). This is not a final-test claim against fair PLE. Grad audit: NORM raw trunk click/conv ≈ 4153; NORM_FLOOR ≈ 9.0; EQ ≈ 9.7. Token-gate collapse remains under NORM_FLOOR (g6_gate + NORM_FLOOR conversion gate ≈ 0.999 on item_id, entropy ≈ 0.007). Entropy regularization and temperature are a later validation-only attempt at that collapse; see section 11. This NORM_FLOOR suite did not run them. Archive: `results/normfloor/`. `NORM_FLOOR_EXPERIMENTALLY_EVALUATED` is True.
 
 PLE tuning used the same data, embedding 16, batch 8192, Adam, epochs ≤ 10, patience 3, and zero regularization. Non-embedding params: g6_mean 133218, PLE baseline 336076, PLE wide 714060, embedding 20401936 for all of them. Three single-change configs × seeds 2025–2027, plus the baseline. Selected config: `PLE_fu_lr5e4` (learning rate 5e-4; 3-seed mean AUC 0.62963 ± 0.00211). With seeds 2028–2029: validation mean AUC 0.62959 ± 0.00188. That ties the best MT-RankMixer rows. The section 8 “above PLE” statement is withdrawn.
 
@@ -238,3 +238,37 @@ Validation only. Seeds 2025–2029. patience 3, epochs ≤ 10, AliCCP_x1, `--ski
 | g6_residual NORM_FLOOR | 0.62019 ± 0.00131 | 0.64554 ± 0.00373 | 0.63287 ± 0.00198 | 0.61806 ± 0.00663 | 0/5 |
 
 Do not treat the residual + NORM_FLOOR validation lead as a replacement for the pre-registered final test in section 9. That test set was not read here.
+
+## 11. 转化门塌缩消融（2026-10-10，只看验证集）
+
+这一节的数字我从 `results/gatecollapse/results.md` 抄来。没有另算均值，也没有补那份归档里没有的配对检验。协议和 rigor 对齐：`--skip_test`，patience 3，epoch ≤ 10，AliCCP_x1，种子 2025–2029，`loss_weight: EQ`，6 个语义 token。基线是 g6_gate EQ。`REUSE_BASELINE=1` 时，checkpoint、训练日志和门控 JSON 从 rigor 的 `rg_out` 复用，所以基线五行的秒数是 0。曝光级转化 AUC 是 CTCVR。clicked-only CVR 是 `click==1` 行上的转化 AUC。塌缩规则：转化门最大权重 ≥ 0.9，或者最大权重 ≥ 0.85 且熵 ≤ 0.5。
+
+| 变体 | n | click AUC | 曝光级转化 AUC | 平均 AUC | clicked-only CVR | 转化门熵 | 最大权重 | 塌缩 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| g6_gate EQ（基线，复用 rigor） | 5 | 0.6189 ± 0.0014 | 0.6414 ± 0.0059 | 0.6301 ± 0.0035 | 0.6230 ± 0.0073 | 0.1213 ± 0.0500 | 0.9786 ± 0.0112 | 5/5 |
+| gate + 熵 β=0.001 | 5 | 0.6172 ± 0.0031 | 0.6364 ± 0.0029 | 0.6268 ± 0.0016 | 0.6151 ± 0.0050 | 1.7868 ± 0.0016 | 0.1811 ± 0.0076 | 0/5 |
+| gate + 熵 β=0.003 | 5 | 0.6200 ± 0.0008 | 0.6380 ± 0.0024 | 0.6290 ± 0.0013 | 0.6133 ± 0.0105 | 1.7891 ± 0.0011 | 0.1749 ± 0.0065 | 0/5 |
+| gate + 熵 β=0.01 | 5 | 0.6192 ± 0.0012 | 0.6334 ± 0.0033 | 0.6263 ± 0.0016 | 0.6051 ± 0.0052 | 1.7906 ± 0.0006 | 0.1738 ± 0.0027 | 0/5 |
+| gate + 温度 T=2 | 5 | 0.6196 ± 0.0007 | 0.6388 ± 0.0034 | 0.6292 ± 0.0016 | 0.6192 ± 0.0137 | 1.1487 ± 0.3473 | 0.5781 ± 0.1891 | 0/5 |
+| gate + 温度 T=4 | 5 | 0.6196 ± 0.0015 | 0.6401 ± 0.0036 | 0.6299 ± 0.0018 | 0.6147 ± 0.0091 | 1.6334 ± 0.1626 | 0.3152 ± 0.1409 | 0/5 |
+| gate + β=0.01 × T=2 | 5 | 0.6197 ± 0.0007 | 0.6373 ± 0.0044 | 0.6285 ± 0.0025 | 0.6057 ± 0.0053 | 1.7912 ± 0.0004 | 0.1688 ± 0.0012 | 0/5 |
+| residual + 熵 β=0.01 | 5 | 0.6198 ± 0.0013 | 0.6365 ± 0.0016 | 0.6282 ± 0.0013 | 0.6117 ± 0.0102 | 1.7912 ± 0.0002 | 0.1714 ± 0.0026 | 0/5 |
+
+基线 5/5 塌缩，最大权重 0.9786 ± 0.0112，平均 AUC 0.6301 ± 0.0035。七个缓解设置全部 0/5。
+
+平均 AUC 掉得最少的是温度 T=4：0.6299 ± 0.0018，判定句 Δ=−0.0003，最大权重 0.3152 ± 0.1409（判定句写成 0.315），熵 1.6334 ± 0.1626，clicked-only CVR 0.6147 ± 0.0091。逐种子最大权重是 0.2367、0.1998、0.2303、0.3717、0.5376。种子 2029 仍到 0.5376，没有过 0.9。这是这张表里 AUC 代价最小的一档，门也没有被压成均匀。
+
+下一档我放熵正则 β=0.003：平均 AUC 0.6290 ± 0.0013，Δ=−0.0012，最大权重 0.1749 ± 0.0065，熵 1.7891 ± 0.0011，clicked-only CVR 0.6133 ± 0.0105。
+
+温度 T=2 的平均 AUC 是 0.6292 ± 0.0016（Δ=−0.0009），最大权重 0.5781 ± 0.1891。种子 2028 是 0.7295（熵 0.8756），种子 2029 是 0.8199（熵 0.7011）。按 ≥0.9 的线是 0/5，离塌缩线并不远。我不把它和 T=4 放在同一档。
+
+强熵把门压得最平，平均 AUC 和 clicked-only CVR 掉得更多。β=0.01 的熵是 1.7906 ± 0.0006，平均 AUC 0.6263 ± 0.0016（Δ=−0.0038），clicked-only CVR 0.6051 ± 0.0052，对照基线的 0.6230 ± 0.0073。β=0.01 × T=2 和 residual + β=0.01 的熵都是 1.7912。6 个 token 均匀分布的熵是 \(\ln 6 \approx 1.7918\)，这几行已经贴在上限上。β=0.001 的熵是 1.7868 ± 0.0016，平均 AUC 0.6268 ± 0.0016（Δ=−0.0033），clicked-only CVR 0.6151 ± 0.0050。β=0.01 × T=2 的 clicked-only CVR 是 0.6057 ± 0.0053，平均 AUC 0.6285 ± 0.0025（Δ=−0.0016）。residual + β=0.01 的平均 AUC 是 0.6282 ± 0.0013（Δ=−0.0020），clicked-only CVR 0.6117 ± 0.0102。塌缩判据过了，选择性没有留下来。
+
+`GC_EXTRA` 默认是 0。residual + β=0.003 没有训，归档稿里没有这一行。Δ 是判定句里的均值差，不是 p 值。这一轮没有读 test，不能改写第 9 节预注册 test 的结论。`NORM_FLOOR` 修的是损失归一化的训崩，不是这张表里的 token 门。
+
+```bash
+# Recorded launch. Baseline is reused from rg_out unless REUSE_BASELINE=0.
+# Does not read test.
+OUT=/root/autodl-tmp/gc_out RG_OUT=/root/autodl-tmp/rg_out \
+  bash benchmarks/rankmixer/run_gatecollapse.sh 0
+```
